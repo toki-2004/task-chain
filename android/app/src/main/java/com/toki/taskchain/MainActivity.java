@@ -380,6 +380,18 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 自动地址切换冷却：15 秒内只允许一次自动切换，打断任何潜在震荡环路。
+     *  手动「设置服务器地址」不受限。 */
+    private boolean autoSwitchAllowed() {
+        long t = getSharedPreferences(PREFS, MODE_PRIVATE).getLong("last_switch", 0);
+        return System.currentTimeMillis() - t > 15000;
+    }
+
+    private void markSwitch() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putLong("last_switch", System.currentTimeMillis()).apply();
+    }
+
     /** 判断是否局域网/本机地址（这些地址不做 http→https 升级）。 */
     private static boolean isLanAddress(String url) {
         try {
@@ -456,6 +468,10 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (result != null && !result.isEmpty() && !result.equals(serverUrl)
                         && result.startsWith("http")) {
+                    if (!autoSwitchAllowed()) {
+                        return;
+                    }
+                    markSwitch();
                     serverUrl = result;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, result).apply();
@@ -526,6 +542,10 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (result != null && !result.isEmpty() && !result.equals(serverUrl)
                         && (result.startsWith("http://") || result.startsWith("https://"))) {
+                    if (!autoSwitchAllowed()) {
+                        return;
+                    }
+                    markSwitch();
                     serverUrl = result;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, result).apply();
@@ -571,6 +591,10 @@ public class MainActivity extends Activity {
                 if (lan != null && !lan.isEmpty() && !lan.equals(serverUrl)
                         && lan.startsWith("http")) {
                     // 家里 WiFi 可直连：切回局域网（更快、不占隧道流量）
+                    if (!autoSwitchAllowed()) {
+                        return;
+                    }
+                    markSwitch();
                     serverUrl = lan;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, lan).apply();
@@ -621,6 +645,10 @@ public class MainActivity extends Activity {
                     return;
                 }
                 runOnUiThread(() -> {
+                    if (!autoSwitchAllowed()) {
+                        return;
+                    }
+                    markSwitch();
                     serverUrl = official;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, official).apply();
@@ -651,6 +679,10 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (url != null && !url.isEmpty() && !url.equals(serverUrl)
                         && url.startsWith("http")) {
+                    if (!autoSwitchAllowed()) {
+                        return;
+                    }
+                    markSwitch();
                     serverUrl = url;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, url).apply();

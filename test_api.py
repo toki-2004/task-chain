@@ -294,6 +294,8 @@ def main():
     a2 = r.json()["id"]
     r = admin.post(f"{BASE}/api/admin/users/{a2}/active", json={"active": False})
     check("管理员不能被停用", r.status_code == 400, r.text)
+    r = admin.delete(f"{BASE}/api/admin/users/{a2}")
+    check("管理员不能被删除", r.status_code == 400, r.text)
     r = admin.post(f"{BASE}/api/admin/users", json={"username": "toggletz", "name": "停用员", "password": "togg12345"})
     tz_id = r.json()["id"]
     r = admin.post(f"{BASE}/api/admin/users/{tz_id}/active", json={"active": False})

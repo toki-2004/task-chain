@@ -310,7 +310,10 @@ def admin_toggle_user(uid: int, body: ActiveBody, request: Request):
 
 @app.delete("/api/admin/users/{uid}")
 def admin_del_user(uid: int, request: Request):
-    """删除用户：参与过任务（发起/创建/受任过节点）的不可删，只能停用，保证全流程留痕完整。"""
+    """删除用户：参与过任务（发起/创建/受任过节点）的不可删，只能停用，保证全流程留痕完整。
+
+    管理员账号一律不可从后台删除，如确需删除请直接操作数据库。
+    """
     admin = require_admin(request)
     if uid == admin["id"]:
         raise HTTPException(400, "不能删除自己的账号")
@@ -318,6 +321,8 @@ def admin_del_user(uid: int, request: Request):
         u = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         if not u:
             raise HTTPException(404, "用户不存在")
+        if u["is_admin"]:
+            raise HTTPException(400, "管理员账号不能从后台删除，如确需删除请直接操作数据库")
         involved = db.execute(
             "SELECT COUNT(*) c FROM nodes WHERE assignee_id=? OR creator_id=?", (uid, uid)
         ).fetchone()["c"] + db.execute(

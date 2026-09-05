@@ -64,7 +64,7 @@ The APK lands at `android/app/build/outputs/apk/debug/app-debug.apk`; sideload i
 | Review rights | Each node is reviewed by its **creator**; node 1's creator is the chain initiator |
 | Next-node creation | The current node's assignee (completer), after approval |
 | Termination rights | Chain initiator (direct) + any node assignee of the chain (needs initiator review) |
-| Deletion guard | Users who took part in tasks and devices referenced/occupied by tasks cannot be deleted (deactivate/release instead); unused ones can be deleted, keeping the audit trail intact |
+| Deletion guard | Admin accounts can be neither deactivated nor deleted from the console (touch the database directly if ever needed); users who took part in tasks and devices referenced/occupied by tasks cannot be deleted (deactivate/release instead); unused ones can be deleted |
 | Task deletion | Whole chains can only be deleted from the **admin console** (nodes, submissions and timeline removed together); chains referenced as prerequisites or with unreturned equipment are protected. Participants' "end task" is a soft ending that keeps records |
 | Visibility | Chain initiator and node creators/assignees of a chain; admins see everything |
 | Accounts | Self-registration on the login page or admin-created in the console; passwords must be ≥8 chars |

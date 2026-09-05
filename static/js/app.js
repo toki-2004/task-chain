@@ -947,8 +947,8 @@ async function renderAdmin(app) {
           <div style="flex:1"><b>${esc(u.name)}</b> ${u.is_admin ? '<span class="chip orange">管理员</span>' : ""}
             <div style="font-size:12px;color:var(--muted)">${esc(u.username)} · ${u.active ? "正常" : "已停用"}</div></div>
           <button class="btn plain small" data-reset="${u.id}">重置密码</button>
-          ${u.is_admin ? "" : `<button class="btn ${u.active ? "danger" : "green"} small" data-toggle="${u.id}" data-active="${u.active}">${u.active ? "停用" : "启用"}</button>`}
-          <button class="btn plain small" data-deluser="${u.id}" style="color:var(--red)">删除</button>
+          ${u.is_admin ? "" : `<button class="btn ${u.active ? "danger" : "green"} small" data-toggle="${u.id}" data-active="${u.active}">${u.active ? "停用" : "启用"}</button>
+          <button class="btn plain small" data-deluser="${u.id}" style="color:var(--red)">删除</button>`}
         </div>`).join("");
       body.querySelector("#add-user").onclick = () => modal({
         title: "新增用户", okText: "创建",

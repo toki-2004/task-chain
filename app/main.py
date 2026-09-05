@@ -11,13 +11,14 @@
 import mimetypes
 import os
 import re
+import socket
 import sqlite3
 import time as _time
 import uuid
 from contextlib import contextmanager
 
 from fastapi import FastAPI, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1119,6 +1120,86 @@ def terminate_review(chain_id: int, body: TermReviewBody, request: Request):
                        "decided_by=? WHERE id=?", (user["id"], term["id"]))
             log_event(db, chain_id, None, user["id"], "terminate_reject", {"comment": body.comment or ""})
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- app config (APK 访问地址)
+
+def _get_config(db, key, default=""):
+    row = db.execute("SELECT value FROM app_config WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def _set_config(db, key, value):
+    db.execute(
+        "INSERT INTO app_config(key, value, updated_at) VALUES(?,?,datetime('now','localtime')) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (key, value),
+    )
+
+
+def _lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+@app.get("/api/appconfig")
+def public_appconfig():
+    """公开接口：APK 启动/联网时拉取官方访问地址（仅此一个非敏感字段）。"""
+    with db_ctx() as db:
+        url = _get_config(db, "app_server_url")
+    return {"app_server_url": url}
+
+
+@app.get("/api/admin/appconfig")
+def admin_get_appconfig(request: Request):
+    require_admin(request)
+    with db_ctx() as db:
+        url = _get_config(db, "app_server_url")
+    port = request.url.port or (443 if request.url.scheme == "https" else 80)
+    return {"app_server_url": url, "lan_url": f"http://{_lan_ip()}:{port}"}
+
+
+class AppConfigBody(BaseModel):
+    app_server_url: str = ""
+
+
+@app.put("/api/admin/appconfig")
+def admin_set_appconfig(body: AppConfigBody, request: Request):
+    require_admin(request)
+    url = body.app_server_url.strip()
+    if url:
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(400, "地址必须以 http:// 或 https:// 开头")
+        while url.endswith("/"):
+            url = url[:-1]
+    with db_ctx() as db:
+        _set_config(db, "app_server_url", url)
+    return {"ok": True, "app_server_url": url}
+
+
+@app.get("/api/admin/appconfig/qr.svg")
+def admin_appconfig_qr(request: Request):
+    require_admin(request)
+    with db_ctx() as db:
+        url = _get_config(db, "app_server_url")
+    if not url:
+        raise HTTPException(400, "尚未设置 APK 访问地址")
+    try:
+        import io as _io
+        import qrcode
+        import qrcode.image.svg
+        img = qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage)
+        buf = _io.BytesIO()
+        img.save(buf)
+    except Exception:
+        raise HTTPException(500, "二维码生成失败")
+    return Response(buf.getvalue(), media_type="image/svg+xml")
 
 
 # ---------------------------------------------------------------- admin: overview

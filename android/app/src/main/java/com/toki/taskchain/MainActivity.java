@@ -20,10 +20,19 @@ import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.Toast;
+
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 /**
  * 协同任务链 WebView 壳。
  * 全部业务界面由服务端网页提供；本壳负责加载地址、文件选择（图片/视频）、Cookie 持久化。
+ * 管理后台设置的「APK 官方访问地址」会在每次成功加载页面后自动拉取并跟随切换。
  */
 public class MainActivity extends Activity {
 
@@ -74,6 +83,11 @@ public class MainActivity extends Activity {
                 }
                 return true;
             }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                syncOfficialUrl(); // 联网成功时检查管理后台设置的官方地址
+            }
         });
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -107,6 +121,47 @@ public class MainActivity extends Activity {
         } else {
             webView.loadUrl(serverUrl);
         }
+    }
+
+    /** 从当前服务器拉取官方访问地址；不同则自动切换（管理后台可改，本方法静默失败）。 */
+    private void syncOfficialUrl() {
+        final String current = serverUrl;
+        if (current.isEmpty()) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                HttpURLConnection conn = (HttpURLConnection)
+                        new URL(current + "/api/appconfig").openConnection();
+                conn.setConnectTimeout(3000);
+                conn.setReadTimeout(3000);
+                BufferedReader br = new BufferedReader(
+                        new InputStreamReader(conn.getInputStream(), "UTF-8"));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) {
+                    sb.append(line);
+                }
+                br.close();
+                JSONObject obj = new JSONObject(sb.toString());
+                final String official = obj.optString("app_server_url", "").trim();
+                if (official.isEmpty() || official.equals(current)) {
+                    return;
+                }
+                if (!official.startsWith("http://") && !official.startsWith("https://")) {
+                    return;
+                }
+                runOnUiThread(() -> {
+                    serverUrl = official;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_SERVER, official).apply();
+                    Toast.makeText(MainActivity.this, "服务器地址已更新", Toast.LENGTH_SHORT).show();
+                    webView.loadUrl(official);
+                });
+            } catch (Exception ignored) {
+                // 拉取失败保持现地址，不影响使用
+            }
+        }).start();
     }
 
     private void askServerDialog() {

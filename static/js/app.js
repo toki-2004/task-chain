@@ -933,7 +933,7 @@ async function renderAdmin(app) {
   const seg = app.querySelector("#adm-seg");
   const body = app.querySelector("#adm-body");
   const drawSeg = () => {
-    seg.innerHTML = [["users", "用户"], ["devices", "设备"], ["tasks", "任务总览"]].map(([k, t]) =>
+    seg.innerHTML = [["users", "用户"], ["devices", "设备"], ["tasks", "任务总览"], ["appaddr", "APK地址"]].map(([k, t]) =>
       `<div class="seg-item ${tab === k ? "active" : ""}" data-t="${k}">${t}</div>`).join("");
     seg.querySelectorAll(".seg-item").forEach((el) => { el.onclick = () => { tab = el.dataset.t; drawSeg(); load(); }; });
   };
@@ -1040,6 +1040,35 @@ async function renderAdmin(app) {
             } catch (e) { toast(e.message, true); }
           });
       });
+    } else if (tab === "appaddr") {
+      const cfg = await GET("/api/admin/appconfig");
+      body.innerHTML = `<div class="card">
+        <div class="section-title" style="margin:0 0 6px">APK 端官方访问地址</div>
+        <div class="form-item"><input id="ac-url" placeholder="http://192.168.x.x:8000 或穿透地址" value="${esc(cfg.app_server_url)}"></div>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+          保存后，已安装的 APK 在下次成功连上服务器时（打开或刷新页面）会自动切换到该地址；
+          地址已失效导致完全连不上的 APK，需在其菜单「切换服务器地址」手动输入一次新地址。</div>
+        <button class="btn block" id="ac-save">保存地址</button>
+        <div class="btn-row">
+          <button class="btn plain small" id="ac-lan">填入本机局域网地址（${esc(cfg.lan_url)}）</button>
+        </div>
+        <div id="ac-qrbox" style="text-align:center;margin-top:12px"></div>
+      </div>`;
+      body.querySelector("#ac-save").onclick = async () => {
+        try {
+          const r = await api("PUT", "/api/admin/appconfig", { app_server_url: body.querySelector("#ac-url").value.trim() });
+          toast("已保存" + (r.app_server_url ? "：" + r.app_server_url : "（已清空）"));
+          load();
+        } catch (e) { toast(e.message, true); }
+      };
+      body.querySelector("#ac-lan").onclick = () => {
+        body.querySelector("#ac-url").value = cfg.lan_url;
+      };
+      if (cfg.app_server_url) {
+        body.querySelector("#ac-qrbox").innerHTML =
+          `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">手机浏览器扫码可直接打开（网页版）</div>
+           <img src="/api/admin/appconfig/qr.svg" alt="二维码" style="width:190px;height:190px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px">`;
+      }
     } else {
       const ov = await GET("/api/admin/overview");
       body.innerHTML = `<div class="card"><div style="display:flex;text-align:center">

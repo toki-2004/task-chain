@@ -27,6 +27,7 @@ Works as a web app (usable directly in the phone browser, nothing to install) an
 - **Termination**: any assignee may apply to terminate (double confirmation), reviewed by the **chain initiator**; the initiator can terminate directly. Termination ends the whole chain and is irreversible.
 - **Home page**: everyone gets "Unfinished / Pending review / Completed" lists with badge counts, sorted by deadline (overdue highlighted in red); "Me" holds identity info and "My publications".
 - **Open registration**: self-service sign-up from the login page (username 2-32 alphanumerics, password ≥8 chars); admins can still create accounts in the console.
+- **APK address management**: the admin console sets the official APK server URL (with QR code); installed apps follow it automatically whenever they can reach the server (a fully unreachable old address still needs one manual change in the app menu).
 - **Full audit trail**: every node's assignee and creator, plus a timeline of create/checkout/feedback/appeal/submit/review/termination/equipment events.
 
 ## Quick start (LAN, 3 minutes)
@@ -42,6 +43,7 @@ Works as a web app (usable directly in the phone browser, nothing to install) an
 `android/` is a plain WebView shell project (no third-party dependencies):
 
 - enter the server URL on first launch; cookies persist between runs;
+- automatically follows the official URL configured in the admin console whenever reachable;
 - system photo/file picker for image/video uploads;
 - menu items to switch server address and clear login state.
 

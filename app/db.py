@@ -128,6 +128,11 @@ CREATE TABLE IF NOT EXISTS terminations(
   decided_at TEXT,
   decided_by INTEGER
 );
+CREATE TABLE IF NOT EXISTS app_config(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
 """
 
 

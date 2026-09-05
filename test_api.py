@@ -64,6 +64,25 @@ def main():
     check("管理员建用户弱密码被拒", r.status_code == 400, r.text)
     tu = login("testu", "testu12345")
 
+    # ---- APK 官方访问地址配置 ----
+    r = requests.get(f"{BASE}/api/appconfig")
+    check("公开拉取 appconfig(空)", r.ok and r.json()["app_server_url"] == "", r.text)
+    r = tu.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": "ftp://x"})
+    check("非管理员不能改配置(403)", r.status_code == 403, f"got {r.status_code}")
+    r = admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": "ftp://x"})
+    check("非 http(s) 地址被拒", r.status_code == 400, r.text)
+    r = admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": "http://192.168.1.50:8000/"})
+    check("管理员保存官方地址", r.ok and r.json()["app_server_url"] == "http://192.168.1.50:8000", r.text)
+    r = requests.get(f"{BASE}/api/appconfig")
+    check("公开拉取到新地址(末尾斜杠已清理)", r.json()["app_server_url"] == "http://192.168.1.50:8000", r.text)
+    r = admin.get(f"{BASE}/api/admin/appconfig")
+    check("管理端读取含 lan_url", r.ok and r.json()["lan_url"].startswith("http://"), r.text)
+    r = admin.get(f"{BASE}/api/admin/appconfig/qr.svg")
+    check("二维码 SVG 生成", r.ok and "svg" in r.headers.get("content-type", ""), r.status_code)
+    admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": ""})
+    r = requests.get(f"{BASE}/api/appconfig")
+    check("可清空官方地址", r.json()["app_server_url"] == "", r.text)
+
     # ---- 开放注册 ----
     s = requests.Session()
     r = s.post(f"{BASE}/api/register", json={"username": "newguy", "name": "新用户", "password": "register8"})

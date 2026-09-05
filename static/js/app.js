@@ -555,7 +555,7 @@ async function renderNode(app, nodeId) {
   }
   if (node.status === "rejected") {
     const lastReject = [...events].reverse().find((e) => e.type === "review_reject");
-    html += `<div class="banner red">❌ 上次提交被驳回${lastReject && JSON.parse(lastReject.detail || "{}").comment ? "：" + esc(JSON.parse(lastReject.detail).comment) : ""}，修改后可重新提交</div>`;
+    html += `<div class="banner red">❌ 上次提交被驳回${lastReject && JSON.parse(lastReject.detail || "{}").comment ? "：" + esc(JSON.parse(lastReject.detail).comment) : ""}，可修改后重新提交</div>`;
   }
 
   /* ---- 我可以做什么 ---- */

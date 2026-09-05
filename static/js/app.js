@@ -1305,6 +1305,7 @@ async function renderAdmin(app) {
       }
       /* 固定入口（Gitee raw 指针） */
       const es = await GET("/api/admin/entrysync");
+      const card = body.querySelector(".card");
       const distInfo = await GET("/apk/info").catch(() => ({version: "", available: false}));
       if (distInfo.available) {
         card.insertAdjacentHTML("beforeend", `<div style="font-size:12px;color:var(--muted);margin-top:10px">📦 服务器当前分发的 APK：v${esc((distInfo.version || "").replace("v", ""))}（公开下载地址 ${esc(location.origin)}/apk）</div>`);

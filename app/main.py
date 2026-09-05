@@ -1212,12 +1212,14 @@ def reply_message(mid: int, body: ReplyBody, request: Request):
         if body.resolve in ("accepted", "rejected") and msg["kind"] == "appeal":
             db.execute("UPDATE messages SET status=? WHERE id=?", (body.resolve, mid))
             log_event(db, node["chain_id"], node["id"], user["id"], "appeal_resolve",
-                      {"result": body.resolve, "text": text[:100]})
+                      {"result": body.resolve, "text": text[:100], "reply_to": mid})
         elif msg["kind"] == "feedback":
             db.execute("UPDATE messages SET status='resolved' WHERE id=?", (mid,))
-            log_event(db, node["chain_id"], node["id"], user["id"], "reply", {"text": text[:100]})
+            log_event(db, node["chain_id"], node["id"], user["id"], "reply",
+                      {"text": text[:100], "reply_to": mid})
         else:
-            log_event(db, node["chain_id"], node["id"], user["id"], "reply", {"text": text[:100]})
+            log_event(db, node["chain_id"], node["id"], user["id"], "reply",
+                      {"text": text[:100], "reply_to": mid})
     return {"ok": True}
 
 
@@ -1280,7 +1282,8 @@ def terminate_review(chain_id: int, body: TermReviewBody, request: Request):
         else:
             db.execute("UPDATE terminations SET status='rejected', decided_at=datetime('now','localtime'), "
                        "decided_by=? WHERE id=?", (user["id"], term["id"]))
-            log_event(db, chain_id, None, user["id"], "terminate_reject", {"comment": body.comment or ""})
+            log_event(db, chain_id, None, user["id"], "terminate_reject",
+                      {"comment": body.comment or "", "applicant_id": term["applicant_id"]})
     return {"ok": True}
 
 
@@ -1686,6 +1689,120 @@ def admin_del_chain(chain_id: int, request: Request):
                 except OSError:
                     pass
     return {"ok": True, "deleted_nodes": len(node_ids)}
+
+
+# ---------------------------------------------------------------- 通知流（APK 弹窗通知数据源）
+
+def _compose_notification(db, e):
+    """把一条事件翻译成 (target_user_id, title, body, node_id)；与目标无关返回 None。"""
+    detail = {}
+    try:
+        detail = json.loads(e["detail"] or "{}")
+    except Exception:
+        pass
+    node = None
+    if e["node_id"]:
+        node = db.execute(
+            "SELECT n.*, c.title chain_title FROM nodes n JOIN chains c ON c.id=n.chain_id WHERE n.id=?",
+            (e["node_id"],),
+        ).fetchone()
+    actor = e["uname"] or "?"
+    t = e["type"]
+    if node:
+        label = f"{node['chain_title']} 节点{node['seq']}「{node['title']}」"
+    if t in ("chain_create", "node_create") and node:
+        if node["assignee_id"] != e["actor_id"]:
+            return node["assignee_id"], "你有新任务", f"{actor} 指派任务：{label}", node["id"]
+        return None
+    if t == "submit" and node and node["creator_id"] != e["actor_id"]:
+        return node["creator_id"], "提交待审核", f"{actor} 提交了 {label}，等待你审核", node["id"]
+    if t == "review_reject" and node and node["assignee_id"] != e["actor_id"]:
+        cmt = f"，原因：{detail.get('comment')}" if detail.get("comment") else ""
+        return node["assignee_id"], "任务被驳回", f"{actor} 驳回了 {label}{cmt}，可修改后重新提交", node["id"]
+    if t == "review_approve" and node and node["assignee_id"] != e["actor_id"]:
+        return node["assignee_id"], "任务审核通过", f"{actor} 审核通过了 {label}", node["id"]
+    if t in ("feedback", "appeal") and node and node["creator_id"] != e["actor_id"]:
+        kind = "申诉" if t == "appeal" else "反馈"
+        return node["creator_id"], f"新{kind}待处理", f"{actor} 对 {label} 发起了{kind}：{str(detail.get('text', ''))[:60]}", node["id"]
+    if t in ("reply", "appeal_resolve"):
+        rid = detail.get("reply_to")
+        if rid:
+            m = db.execute("SELECT user_id, node_id, kind FROM messages WHERE id=?", (rid,)).fetchone()
+            if m and m["user_id"] != e["actor_id"]:
+                n2 = db.execute(
+                    "SELECT n.*, c.title chain_title FROM nodes n JOIN chains c ON c.id=n.chain_id WHERE n.id=?",
+                    (m["node_id"],),
+                ).fetchone()
+                if n2:
+                    kind = "申诉" if m["kind"] == "appeal" else "反馈"
+                    label2 = f"{n2['chain_title']} 节点{n2['seq']}「{n2['title']}」"
+                    return m["user_id"], f"你的{kind}有回复", f"{actor} 回复了你在 {label2} 的{kind}：{str(detail.get('text', ''))[:60]}", n2["id"]
+        return None
+    if t == "task_edit" and node and node["assignee_id"] != e["actor_id"]:
+        chg = "；".join(detail.get("changes", []))
+        return node["assignee_id"], "任务已修改", f"{actor} 调整了 {label}：{chg[:80]}", node["id"]
+    if t == "submission_edit" and node and node["creator_id"] != e["actor_id"]:
+        return node["creator_id"], "提交已修改", f"{actor} 修改了 {label} 的提交内容", node["id"]
+    if t == "terminate_apply":
+        ch = db.execute("SELECT * FROM chains WHERE id=?", (e["chain_id"],)).fetchone()
+        if ch and ch["creator_id"] != e["actor_id"]:
+            return ch["creator_id"], "结束申请待审核", f"{actor} 申请结束任务链「{ch['title']}」", None
+    if t == "terminate_reject":
+        uid = detail.get("applicant_id")
+        ch = db.execute("SELECT * FROM chains WHERE id=?", (e["chain_id"],)).fetchone()
+        if uid and ch and uid != e["actor_id"]:
+            return uid, "结束申请被拒绝", f"{actor} 拒绝了任务链「{ch['title']}」的结束申请", None
+    return None
+
+
+@app.get("/api/notifications")
+def notifications(request: Request, since: int = -1):
+    """APK 通知流：返回当前用户自上次拉取之后需要其操作/知悉的事件（最新 20 条）。"""
+    user = require_user(request)
+    with db_ctx() as db:
+        row = db.execute("SELECT last_id FROM notify_seen WHERE user_id=?", (user["id"],)).fetchone()
+        seen = row["last_id"] if row else 0
+        if since >= 0:
+            seen = since
+        evs = db.execute(
+            "SELECT e.*, u.name uname FROM events e LEFT JOIN users u ON u.id=e.actor_id "
+            "WHERE e.id>? ORDER BY e.id DESC LIMIT 300",
+            (seen,),
+        ).fetchall()
+        evs = list(reversed(evs))  # 最近 300 条事件，时间正序处理
+        items = []
+        last_id = seen
+        for e in evs:
+            last_id = e["id"]
+            if e["actor_id"] == user["id"]:
+                continue
+            r = _compose_notification(db, e)
+            if r:
+                target, title, body, node_id = r
+                if target == user["id"]:
+                    items.append({"id": e["id"], "title": title, "body": body,
+                                  "node_id": node_id, "created_at": e["created_at"]})
+        if len(items) > 20:
+            items = items[-20:]
+        if items:
+            last_id = items[-1]["id"]
+    return {"items": items, "last_id": last_id}
+
+
+class NotifySeenBody(BaseModel):
+    last_id: int
+
+
+@app.post("/api/notifications/seen")
+def notifications_seen(body: NotifySeenBody, request: Request):
+    user = require_user(request)
+    with db_ctx() as db:
+        db.execute(
+            "INSERT INTO notify_seen(user_id, last_id) VALUES(?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET last_id=excluded.last_id",
+            (user["id"], body.last_id),
+        )
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- APK 分发（服务器自分发，手机无需访问 GitHub）

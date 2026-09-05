@@ -5,7 +5,9 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -192,9 +194,13 @@ public class MainActivity extends Activity {
             showLoading(true);
             Toast.makeText(this, "正在局域网搜索服务器…", Toast.LENGTH_SHORT).show();
             discoverOnLan(true);
+        } else if (getIntent() != null && getIntent().getBooleanExtra("taskchain_push", false)) {
+            loadServerUrl(serverUrl);
+            handlePushIntent(getIntent()); // 冷启动：通知点击直达任务
         } else {
             loadServerUrl(serverUrl);
         }
+        startNotifyService();
         checkForUpdate(false); // 启动静默检查新版本
     }
 
@@ -355,18 +361,66 @@ public class MainActivity extends Activity {
     /** 统一的地址加载入口：公网 http 地址自动尝试 https（frp 服务商多启用自动 HTTPS，
      *  HTTP 访问会被 501 拒绝），失败时在 onReceivedError 里回落到原 http 地址。 */
     private void loadServerUrl(String url) {
+        url = normalizeServerUrl(url);
         if (url == null || url.isEmpty()) {
             return;
+        }
+        serverUrl = url;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_SERVER, url).apply();
+        showLoading(true);
+        webView.loadUrl(url);
+    }
+
+    /** 归一化地址：公网 http 自动升级 https（升级失败会在 onReceivedError 回落）。 */
+    private String normalizeServerUrl(String url) {
+        if (url == null || url.isEmpty()) {
+            return url;
+        }
+        while (url.endsWith("/")) {
+            url = url.substring(0, url.length() - 1);
         }
         if (url.startsWith("http://") && !isLanAddress(url)
                 && !("https://" + url.substring(7)).equals(lastFailedHttps)) {
             lastHttpFallback = url;
             url = "https://" + url.substring(7);
         }
-        serverUrl = url;
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_SERVER, url).apply();
-        showLoading(true);
-        webView.loadUrl(url);
+        return url;
+    }
+
+    /** 通知服务 + 系统通知权限（API 33+ 需运行时申请）。 */
+    private void startNotifyService() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                        != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 100);
+        }
+        Intent si = new Intent(this, NotifyService.class);
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(si);
+        } else {
+            startService(si);
+        }
+    }
+
+    /** 通知点击：直达对应任务详情。 */
+    private void handlePushIntent(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra("taskchain_push", false)) {
+            return;
+        }
+        int nid = intent.getIntExtra("node", 0);
+        if (nid > 0 && !serverUrl.isEmpty()) {
+            showLoading(true);
+            String base = normalizeServerUrl(serverUrl);
+            serverUrl = base;
+            webView.loadUrl(base + "/#/node/" + nid);
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handlePushIntent(intent);
     }
 
     private void showLoading(boolean show) {

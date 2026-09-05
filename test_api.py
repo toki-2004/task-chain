@@ -478,6 +478,25 @@ def main():
     check("审核后不能修改任务", r.status_code == 400, f"got {r.status_code}")
     zs.post(f"{BASE}/api/chains/{c_cm}/terminate", json={"reason": "测试完成"})
 
+    # ---- 通知流（APK 弹窗数据源）----
+    r = s.post(f"{BASE}/api/tasks", json={"title": "通知流测试", "assignee_id": uid["lisi"]})
+    n_nt = r.json()["node_id"]
+    r = ls.get(f"{BASE}/api/notifications").json()
+    check("受任人收到新任务通知", any(i["node_id"] == n_nt and i["title"] == "你有新任务" for i in r["items"]), str(r)[:200])
+    last_id = r["last_id"]
+    r = ls.post(f"{BASE}/api/notifications/seen", json={"last_id": last_id})
+    check("标记已读", r.ok, r.text)
+    r = ls.get(f"{BASE}/api/notifications").json()
+    check("已读后不再重复推送", all(i["node_id"] != n_nt for i in r["items"]), str(r)[:150])
+    r = ls.post(f"{BASE}/api/nodes/{n_nt}/submit", json={"note": "待审核"})
+    r = s.get(f"{BASE}/api/notifications").json()
+    check("创建者收到待审核通知", any(i["node_id"] == n_nt and i["title"] == "提交待审核" for i in r["items"]), str(r)[:200])
+    r = s.post(f"{BASE}/api/nodes/{n_nt}/review", json={"approve": False, "comment": "请补充材料"})
+    r = ls.get(f"{BASE}/api/notifications").json()
+    check("受任人收到驳回通知", any(i["title"] == "任务被驳回" and i["node_id"] == n_nt for i in r["items"]), str(r)[:200])
+    r = tu.get(f"{BASE}/api/notifications").json()
+    check("无关用户无该任务通知", all(i["node_id"] != n_nt for i in r["items"]), str(r)[:150])
+
     # 登录防爆破（放在最后：锁的是不存在的用户名，不影响其他用例）
     for i in range(5):
         requests.post(f"{BASE}/api/login", json={"username": "bruteforce_x", "password": "wrong"})

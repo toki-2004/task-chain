@@ -133,6 +133,10 @@ CREATE TABLE IF NOT EXISTS app_config(
   value TEXT NOT NULL DEFAULT '',
   updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
+CREATE TABLE IF NOT EXISTS notify_seen(
+  user_id INTEGER PRIMARY KEY,
+  last_id INTEGER NOT NULL DEFAULT 0
+);
 """
 
 

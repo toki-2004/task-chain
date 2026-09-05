@@ -653,9 +653,10 @@ async function renderNode(app, nodeId) {
   html += `</div>`;
 
   /* ---- 沟通记录（反馈/申诉） ---- */
-  html += `<div class="card"><div class="section-title" style="margin:0 0 2px">反馈与申诉</div>`;
   const topMsgs = messages.filter((m) => !m.reply_to);
-  html += topMsgs.length ? topMsgs.map((m) => {
+  const pendingMsgs = topMsgs.filter((m) => m.status === "open");
+  const messagesCard = `<div class="card"${pendingMsgs.length ? ' style="outline:2px solid var(--orange)"' : ''}><div class="section-title" style="margin:0 0 2px">反馈与申诉${pendingMsgs.length ? ` <span class="chip orange">${pendingMsgs.length} 条待处理</span>` : ""}</div>` +
+    (topMsgs.length ? topMsgs.map((m) => {
     const kindChip = m.kind === "appeal"
       ? `<span class="chip ${m.status === "open" ? "orange" : m.status === "accepted" ? "green" : "grey"}">申诉·${m.status === "open" ? "待处理" : m.status === "accepted" ? "已受理" : "未受理"}</span>`
       : `<span class="chip blue">反馈</span>`;
@@ -675,8 +676,12 @@ async function renderNode(app, nodeId) {
       ${m.replies.length ? `<div class="replies">${m.replies.map((r) => `<div class="msg-item"><div class="head"><b>${esc(r.uname)}</b><span style="color:var(--grey);font-size:11.5px">${esc(r.created_at)}</span></div><div class="text">${esc(r.text)}</div></div>`).join("")}</div>` : ""}
       ${ops}
     </div>`;
-  }).join("") : `<div style="color:var(--grey);font-size:13px;padding:6px 0">暂无反馈/申诉</div>`;
-  html += `</div>`;
+  }).join("") : `<div style="color:var(--grey);font-size:13px;padding:6px 0">暂无反馈/申诉</div>`) +
+    `</div>`;
+
+  if (!pendingMsgs.length) {
+    html += messagesCard; // 无待处理时保持在提交记录之后
+  }
 
   /* ---- 全流程链 ---- */
   html += `<div class="card"><div class="section-title" style="margin:0 0 2px">任务链全流程（${nodes.length} 个节点）</div>`;
@@ -706,6 +711,9 @@ async function renderNode(app, nodeId) {
   }).join("");
   html += `</div></div>`;
 
+  if (pendingMsgs.length) {
+    html = messagesCard + html; // 有待处理反馈/申诉时置于详情页最上层
+  }
   page.innerHTML = html;
   bindViewer(page);
   page.querySelectorAll("[data-goto]").forEach((el) => {
@@ -994,6 +1002,9 @@ async function renderDevice(app, did) {
       <div class="tl-time">${esc(h.taken_at)}${h.returned_at ? " → " + esc(h.returned_at) : " → 在用"}</div></div>`).join("")
     : `<div style="color:var(--grey);font-size:13px">暂无流转记录</div>`;
   html += `</div>`;
+  if (pendingMsgs.length) {
+    html = messagesCard + html; // 有待处理反馈/申诉时置于详情页最上层
+  }
   page.innerHTML = html;
   const retBtn = page.querySelector("#dev-return");
   if (retBtn) retBtn.onclick = async () => {

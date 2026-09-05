@@ -8,11 +8,17 @@
 
 ## 界面预览
 
-| 登录 | 任务详情（前置设备 + 我的操作） |
+| 登录 / 注册 | 首页（三栏数字常显 + 角标） |
 | --- | --- |
-| ![登录](docs/screenshots/login.png) | ![任务详情](docs/screenshots/task-detail.png) |
-| **任务链全流程 + 时间线** | **管理后台 · 设备** |
-| ![全流程](docs/screenshots/chain-timeline.png) | ![管理后台](docs/screenshots/admin-devices.png) |
+| ![登录](docs/screenshots/login.png) | ![首页](docs/screenshots/home-unfinished.png) |
+| **待审核：反馈与申诉卡片直达处理** | **任务详情：前置设备状态 + 完成条件** |
+| ![待审核](docs/screenshots/home-feedback.png) | ![任务详情](docs/screenshots/task-detail.png) |
+| **反馈/申诉置顶，一键回复 / 修改任务并处理** | **待审核期间可修改提交内容** |
+| ![申诉置顶](docs/screenshots/task-appeal-top.png) | ![修改提交](docs/screenshots/edit-submission.png) |
+| **修改任务弹窗（变更摘要自动回复申诉人）** | **前置任务选择支持搜索** |
+| ![处理申诉](docs/screenshots/edit-task-appeal.png) | ![前置搜索](docs/screenshots/prereq-search.png) |
+| **管理后台 · 设备（领用/释放/删除保护）** | **APK 地址与救援邮箱配置** |
+| ![管理后台](docs/screenshots/admin-devices.png) | ![APK地址](docs/screenshots/apk-entry.png) |
 
 ## 功能特性
 

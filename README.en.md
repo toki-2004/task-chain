@@ -8,11 +8,17 @@ Works as a web app (usable directly in the phone browser, nothing to install) an
 
 ## Screenshots
 
-| Login | Task detail (prerequisite equipment + actions) |
+| Login / register | Home (persistent counters + badges) |
 | --- | --- |
-| ![Login](docs/screenshots/login.png) | ![Task detail](docs/screenshots/task-detail.png) |
-| **Chain & full audit timeline** | **Admin console · devices** |
-| ![Timeline](docs/screenshots/chain-timeline.png) | ![Admin](docs/screenshots/admin-devices.png) |
+| ![Login](docs/screenshots/login.png) | ![Home](docs/screenshots/home-unfinished.png) |
+| **Pending: feedback & appeal cards** | **Task detail: equipment prerequisite + criteria** |
+| ![Pending](docs/screenshots/home-feedback.png) | ![Detail](docs/screenshots/task-detail.png) |
+| **Appeals pinned on top, reply / edit-and-resolve** | **Editable submission before review** |
+| ![Appeal top](docs/screenshots/task-appeal-top.png) | ![Edit submission](docs/screenshots/edit-submission.png) |
+| **Edit task (change summary auto-replied to appellant)** | **Searchable prerequisite picker** |
+| ![Edit task](docs/screenshots/edit-task-appeal.png) | ![Search](docs/screenshots/prereq-search.png) |
+| **Admin console · devices** | **APK URL & rescue mailbox config** |
+| ![Admin](docs/screenshots/admin-devices.png) | ![APK entry](docs/screenshots/apk-entry.png) |
 
 ## Features
 

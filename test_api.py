@@ -288,6 +288,21 @@ def main():
     r = requests.post(f"{BASE}/api/login", json={"username": "delsz", "password": "delsz12345"})
     check("已删用户无法登录", r.status_code == 400, f"got {r.status_code}")
 
+    # 管理员账号保护：不可停用，避免失去后台管理入口
+    r = admin.post(f"{BASE}/api/admin/users", json={"username": "admin2", "name": "副管理", "password": "admin23456", "is_admin": True})
+    check("新建第二个管理员", r.ok, r.text)
+    a2 = r.json()["id"]
+    r = admin.post(f"{BASE}/api/admin/users/{a2}/active", json={"active": False})
+    check("管理员不能被停用", r.status_code == 400, r.text)
+    r = admin.post(f"{BASE}/api/admin/users", json={"username": "toggletz", "name": "停用员", "password": "togg12345"})
+    tz_id = r.json()["id"]
+    r = admin.post(f"{BASE}/api/admin/users/{tz_id}/active", json={"active": False})
+    check("普通用户可停用", r.ok, r.text)
+    r = admin.post(f"{BASE}/api/admin/users/{tz_id}/active", json={"active": True})
+    check("普通用户可启用", r.ok, r.text)
+    r = admin.delete(f"{BASE}/api/admin/users/{tz_id}")
+    check("清理停用测试用户", r.ok, r.text)
+
     # 列表桶
     for s, name in [(ls, "李四"), (zs, "张三"), (ww, "王五")]:
         for b in ["unfinished", "pending", "done"]:

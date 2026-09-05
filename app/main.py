@@ -297,6 +297,11 @@ def admin_toggle_user(uid: int, body: ActiveBody, request: Request):
     if uid == admin["id"]:
         raise HTTPException(400, "不能停用自己的账号")
     with db_ctx() as db:
+        target = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if not target:
+            raise HTTPException(404, "用户不存在")
+        if target["is_admin"] and not body.active:
+            raise HTTPException(400, "管理员账号不能被停用，避免失去后台管理入口")
         db.execute("UPDATE users SET active=? WHERE id=?", (1 if body.active else 0, uid))
         if not body.active:
             db.execute("DELETE FROM sessions WHERE user_id=?", (uid,))

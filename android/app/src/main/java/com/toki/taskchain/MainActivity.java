@@ -18,9 +18,12 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.view.View;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONObject;
@@ -59,6 +62,10 @@ public class MainActivity extends Activity {
     private WebView webView;
     private String serverUrl = "";
     private ValueCallback<Uri[]> fileCallback;
+    private LinearLayout loadingOverlay;
+    /** https 尝试失败记录（避免 http↔https 往返死循环） */
+    private String lastFailedHttps = "";
+    private String lastHttpFallback = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -70,6 +77,28 @@ public class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         webView = new WebView(this);
         root.addView(webView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // 加载动画遮罩（页面加载期间覆盖 WebView，避免白屏焦虑）
+        loadingOverlay = new LinearLayout(this);
+        loadingOverlay.setOrientation(LinearLayout.VERTICAL);
+        loadingOverlay.setGravity(android.view.Gravity.CENTER);
+        loadingOverlay.setBackgroundColor(Color.parseColor("#F4F6F9"));
+        ProgressBar pb = new ProgressBar(this);
+        LinearLayout.LayoutParams pbLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pbLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+        loadingOverlay.addView(pb, pbLp);
+        TextView loadTip = new TextView(this);
+        loadTip.setText("正在加载…");
+        loadTip.setPadding(0, 28, 0, 0);
+        loadTip.setGravity(android.view.Gravity.CENTER);
+        loadTip.setTextColor(Color.parseColor("#8A94A6"));
+        LinearLayout.LayoutParams tvLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tvLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+        loadingOverlay.addView(loadTip, tvLp);
+        root.addView(loadingOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         WebSettings ws = webView.getSettings();
@@ -101,7 +130,13 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                showLoading(true);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
+                showLoading(false);
                 syncOfficialUrl(); // 联网成功时检查管理后台设置的官方地址
             }
 
@@ -109,6 +144,15 @@ public class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest request,
                                         WebResourceError error) {
                 if (request.isForMainFrame()) {
+                    // https 尝试失败：回落到原 http 地址再试一次
+                    if (serverUrl.startsWith("https://") && !lastHttpFallback.isEmpty()
+                            && serverUrl.endsWith(lastHttpFallback.substring(7))) {
+                        lastFailedHttps = serverUrl;
+                        String fb = lastHttpFallback;
+                        lastHttpFallback = "";
+                        loadServerUrl(fb);
+                        return;
+                    }
                     // 主页加载失败：局域网发现 → 内置入口 → 固定入口 → 救援邮箱
                     discoverOnLan(false);
                 }
@@ -142,12 +186,59 @@ public class MainActivity extends Activity {
             webView.restoreState(savedInstanceState);
         }
         if (serverUrl.isEmpty()) {
-            // 全新启动：局域网 UDP 自动发现 → 内置默认入口 → 手动输入
+            // 全新启动：局域网 UDP 自动发现 → 内置默认入口 → 固定入口 → 救援邮箱 → 手动输入
+            showLoading(true);
             Toast.makeText(this, "正在局域网搜索服务器…", Toast.LENGTH_SHORT).show();
             discoverOnLan(true);
         } else {
-            webView.loadUrl(serverUrl);
+            loadServerUrl(serverUrl);
         }
+    }
+
+    /** 统一的地址加载入口：公网 http 地址自动尝试 https（frp 服务商多启用自动 HTTPS，
+     *  HTTP 访问会被 501 拒绝），失败时在 onReceivedError 里回落到原 http 地址。 */
+    private void loadServerUrl(String url) {
+        if (url == null || url.isEmpty()) {
+            return;
+        }
+        if (url.startsWith("http://") && !isLanAddress(url)
+                && !("https://" + url.substring(7)).equals(lastFailedHttps)) {
+            lastHttpFallback = url;
+            url = "https://" + url.substring(7);
+        }
+        serverUrl = url;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_SERVER, url).apply();
+        showLoading(true);
+        webView.loadUrl(url);
+    }
+
+    private void showLoading(boolean show) {
+        if (loadingOverlay != null) {
+            runOnUiThread(() -> loadingOverlay.setVisibility(show ? View.VISIBLE : View.GONE));
+        }
+    }
+
+    /** 判断是否局域网/本机地址（这些地址不做 http→https 升级）。 */
+    private static boolean isLanAddress(String url) {
+        try {
+            String host = new URL(url).getHost();
+            if (host == null) {
+                return false;
+            }
+            if (host.equals("localhost")) {
+                return true;
+            }
+            String[] p = host.split("\\.");
+            if (p.length == 4 && p[0].matches("\\d+") && p[1].matches("\\d+")) {
+                int a = Integer.parseInt(p[0]);
+                int b = Integer.parseInt(p[1]);
+                return a == 10 || a == 127 || (a == 192 && b == 168)
+                        || (a == 172 && b >= 16 && b <= 31)
+                        || (a == 100 && b >= 64 && b <= 127); // 含 Tailscale CGNAT 段
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
     }
 
     /** 局域网 UDP 自动发现：广播问询，服务器应答 "TASKCHAIN_SERVER|http://ip:port"。 */
@@ -201,7 +292,7 @@ public class MainActivity extends Activity {
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, result).apply();
                     Toast.makeText(MainActivity.this, "已连接到服务器：" + result, Toast.LENGTH_SHORT).show();
-                    webView.loadUrl(result);
+                    loadServerUrl(result);
                     return;
                 }
                 // 发现失败：内置默认入口 → 固定入口 → 救援邮箱 → 手动
@@ -209,7 +300,7 @@ public class MainActivity extends Activity {
                     serverUrl = DEFAULT_ENTRY;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, DEFAULT_ENTRY).apply();
-                    webView.loadUrl(DEFAULT_ENTRY);
+                    loadServerUrl(DEFAULT_ENTRY);
                 } else if (!entryUrl().isEmpty() && !entryUrl().equals(serverUrl)) {
                     resolveViaEntry(false);
                 } else {
@@ -271,7 +362,7 @@ public class MainActivity extends Activity {
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, result).apply();
                     Toast.makeText(MainActivity.this, "已通过固定入口获取服务器地址", Toast.LENGTH_SHORT).show();
-                    webView.loadUrl(result);
+                    loadServerUrl(result);
                 } else if (onFailAskServer && serverUrl.isEmpty()) {
                     askServerDialog();
                 }
@@ -341,7 +432,7 @@ public class MainActivity extends Activity {
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, official).apply();
                     Toast.makeText(MainActivity.this, "服务器地址已更新", Toast.LENGTH_SHORT).show();
-                    webView.loadUrl(official);
+                    loadServerUrl(official);
                 });
             } catch (Exception ignored) {
                 // 拉取失败保持现地址，不影响使用
@@ -371,7 +462,7 @@ public class MainActivity extends Activity {
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_SERVER, url).apply();
                     Toast.makeText(MainActivity.this, "已通过救援邮箱恢复连接", Toast.LENGTH_SHORT).show();
-                    webView.loadUrl(url);
+                    loadServerUrl(url);
                 } else if (onFailAsk && serverUrl.isEmpty()) {
                     askServerDialog();
                 }
@@ -509,7 +600,7 @@ public class MainActivity extends Activity {
                         serverUrl = url;
                         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                                 .putString(KEY_SERVER, url).apply();
-                        webView.loadUrl(serverUrl);
+                        loadServerUrl(serverUrl);
                     }
                 })
                 .show();
@@ -531,7 +622,7 @@ public class MainActivity extends Activity {
         } else if (item.getItemId() == 2) {
             CookieManager.getInstance().removeAllCookies(null);
             CookieManager.getInstance().flush();
-            webView.loadUrl(serverUrl);
+            loadServerUrl(serverUrl);
             return true;
         } else if (item.getItemId() == 3) {
             askEntryDialog();
@@ -583,7 +674,7 @@ public class MainActivity extends Activity {
                         serverUrl = manualUrl;
                         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                                 .putString(KEY_SERVER, manualUrl).apply();
-                        webView.loadUrl(manualUrl);
+                        loadServerUrl(manualUrl);
                     } else if (!entry.isEmpty() && !entry.equals(saved)) {
                         resolveViaEntry(false);
                     }

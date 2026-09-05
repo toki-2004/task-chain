@@ -1293,10 +1293,15 @@ CUSTOM_KEYS = ("entry_push_url", "entry_push_token")
 RESCUE_KEYS = ("rescue_mail_from", "rescue_mail_code", "rescue_mail_to")
 SMTP_HOST = "smtp.qq.com"   # 如用 163 邮箱改为 smtp.163.com
 POP_HOST = "pop.qq.com"     # 如用 163 邮箱改为 pop.163.com
+RESCUE_SUBJECT = "task-chain address update"   # 救援邮件主题标记（全 ASCII，APK 按此定位）
 
 
 def _send_rescue_mail(server_url):
-    """官方地址变更时发一封救援邮件到固定邮箱（供 APK POP3 自救读取）。"""
+    """官方地址变更时发一封救援邮件到固定邮箱（供 APK POP3 自救读取）。
+
+    主题与正文必须全 ASCII 明文（Python MIMEText 用 ascii 字符集不做 base64），
+    APK 端按主题标记定位救援邮件、直接正则提取正文 URL。
+    """
     import smtplib
     from email.mime.text import MIMEText
     with db_ctx() as db:
@@ -1306,10 +1311,12 @@ def _send_rescue_mail(server_url):
     if not (sender and code and to):
         return {"ok": False, "message": "救援邮箱未配置"}
     try:
-        msg = MIMEText(f"任务链服务器地址已更新：{server_url}\n"
-                       f"时间：{__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                       f"（本邮件由系统自动发送，APK 将读取本邮件自动恢复连接）", "plain", "utf-8")
-        msg["Subject"] = "任务链地址更新"
+        now = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        body = (f"TaskChain server address updated: {server_url}\n"
+                f"Time: {now}\n"
+                f"(Auto-sent by task-chain. The APK reads this mail to recover connection.)")
+        msg = MIMEText(body, "plain", "ascii")
+        msg["Subject"] = RESCUE_SUBJECT
         msg["From"] = sender
         msg["To"] = to
         smtp = smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=10)

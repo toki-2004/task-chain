@@ -53,6 +53,8 @@ public class MainActivity extends Activity {
      * 留空 = 不启用；局域网场景由 UDP 自动发现覆盖，无需填写。
      */
     private static final String DEFAULT_ENTRY = "";
+    /** 救援邮件主题标记（与服务端 RESCUE_SUBJECT 一致，全 ASCII） */
+    private static final String RESCUE_SUBJECT = "task-chain address update";
 
     private WebView webView;
     private String serverUrl = "";
@@ -377,7 +379,8 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** 手写 POP3 客户端（零依赖）：登录救援邮箱，读最新一封邮件正文中的第一个 URL。 */
+    /** 手写 POP3 客户端（零依赖）：登录救援邮箱，从最新往回找主题标记的救援邮件，
+     *  提取正文中的第一个 URL。最多扫描最近 10 封。 */
     private static String pop3LatestUrl(String user, String token, String popHost) {
         String host = popHost == null || popHost.isEmpty() ? "pop.qq.com" : popHost;
         int port = 995;
@@ -411,33 +414,45 @@ public class MainActivity extends Activity {
                 return null;
             }
             int count = Integer.parseInt(stat.split("\\s+")[1]);
-            if (count == 0) {
-                w.println("A4 QUIT");
-                return null;
-            }
-            w.println("A4 RETR " + count);
-            if (!popWaitOk(r, "A4")) {
-                return null;
-            }
-            StringBuilder body = new StringBuilder();
-            String line;
-            boolean inBody = false;
-            while ((line = r.readLine()) != null) {
-                if (line.equals(".")) {
-                    break;
+            String found = null;
+            for (int i = count; i >= 1 && i > count - 10; i--) {
+                // 只取头部，按主题标记定位救援邮件（避免误读邮箱里其他含链接的邮件）
+                w.println("A4" + i + " TOP " + i + " 0");
+                if (!popWaitOk(r, "A4" + i)) {
+                    continue;
                 }
-                if (line.isEmpty()) {
-                    inBody = true;
+                StringBuilder head = new StringBuilder();
+                String line;
+                while ((line = r.readLine()) != null && !line.equals(".")) {
+                    head.append(line).append('\n');
                 }
-                if (inBody) {
-                    body.append(line).append('\n');
+                if (!head.toString().contains(RESCUE_SUBJECT)) {
+                    continue;
                 }
+                w.println("A5" + i + " RETR " + i);
+                if (!popWaitOk(r, "A5" + i)) {
+                    continue;
+                }
+                StringBuilder body = new StringBuilder();
+                boolean inBody = false;
+                while ((line = r.readLine()) != null && !line.equals(".")) {
+                    if (line.isEmpty()) {
+                        inBody = true;
+                    }
+                    if (inBody) {
+                        body.append(line).append('\n');
+                    }
+                }
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("https?://[^\\s<>\"']+").matcher(body);
+                if (m.find()) {
+                    found = m.group();
+                }
+                break; // 找到最新一封救援邮件即止（无论是否含地址）
             }
-            w.println("A5 QUIT");
+            w.println("A9 QUIT");
             sock.close();
-            java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile("https?://[^\\s<>\"']+").matcher(body);
-            return m.find() ? m.group() : null;
+            return found;
         } catch (Exception e) {
             try {
                 if (sock != null) {

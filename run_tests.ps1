@@ -19,6 +19,7 @@ foreach ($p in $procs) {
 Start-Sleep -Milliseconds 600
 
 $env:TASKCHAIN_DB = $tmpDb
+$env:TASKCHAIN_PORT = "8001"
 $py = Join-Path (Get-Location) ".venv\Scripts\python.exe"
 # seed demo users/devices into the throwaway DB
 & $py seed_demo.py | Out-Null

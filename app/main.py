@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import sqlite3
+import threading
 import time as _time
 import uuid
 from contextlib import contextmanager
@@ -1434,6 +1435,48 @@ def startup():
             db.execute("INSERT INTO users(username, password_hash, name, is_admin) VALUES(?,?,?,1)",
                        ("admin", hash_password("admin123"), "管理员"))
             print("[init] created default admin account: admin / admin123")
+    _start_discovery_responder()
+
+
+# ---------------------------------------------------------------- LAN discovery (APK 零配置)
+
+DISCOVERY_PROBE = b"TASKCHAIN_DISCOVER"
+DISCOVERY_PORT = 9875
+
+
+def _start_discovery_responder():
+    """UDP 应答线程：APK 在局域网广播问询，本线程回应服务器地址（端口 9875/UDP）。"""
+    http_port = os.environ.get("TASKCHAIN_PORT", "8000")
+
+    def responder():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", DISCOVERY_PORT))
+            sock.settimeout(1.0)
+        except Exception as e:
+            print(f"[discovery] UDP {DISCOVERY_PORT} bind failed: {e}")
+            return
+        while True:
+            try:
+                data, addr = sock.recvfrom(1024)
+                if not data.startswith(DISCOVERY_PROBE):
+                    continue
+                try:
+                    tmp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    tmp.connect((addr[0], 9))  # 不发包，取该方向的本机接口 IP
+                    my_ip = tmp.getsockname()[0]
+                    tmp.close()
+                except Exception:
+                    my_ip = _lan_ip()
+                reply = f"TASKCHAIN_SERVER|http://{my_ip}:{http_port}".encode("utf-8")
+                sock.sendto(reply, addr)
+            except socket.timeout:
+                continue
+            except Exception:
+                continue
+
+    threading.Thread(target=responder, daemon=True, name="discovery-responder").start()
 
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")

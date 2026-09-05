@@ -41,6 +41,18 @@ def make_png():
 
 
 def main():
+    # UDP 局域网发现应答
+    import socket as _s
+    u = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    u.settimeout(3.0)
+    u.sendto(b"TASKCHAIN_DISCOVER", ("127.0.0.1", 9875))
+    try:
+        data, _ = u.recvfrom(256)
+        check("UDP 发现应答指向测试端口", data.startswith(b"TASKCHAIN_SERVER|http://127.0.0.1:8001"), data.decode("utf-8", "replace"))
+    except Exception as e:
+        check("UDP 发现应答指向测试端口", False, str(e))
+    u.close()
+
     admin = login("admin", "admin123")
     zs = login("zhangsan")
     ls = login("lisi")

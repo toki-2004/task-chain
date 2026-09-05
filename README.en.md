@@ -28,7 +28,8 @@ Works as a web app (usable directly in the phone browser, nothing to install) an
 - **Home page**: everyone gets "Unfinished / Pending review / Completed" lists with badge counts, sorted by deadline (overdue highlighted in red); "Me" holds identity info and "My publications".
 - **Open registration**: self-service sign-up from the login page (username 2-32 alphanumerics, password ≥8 chars); admins can still create accounts in the console.
 - **APK address management**: the admin console sets the official APK server URL (with QR code); installed apps follow it automatically whenever they can reach the server.
-- **Fixed-entry self rescue**: the console can push the official URL to a Gitee raw config file (free, reachable in China); an APK with the fixed entry configured recovers automatically on next launch even if its saved address is fully dead. Provider comparison: [docs/entry-providers.md](docs/entry-providers.md) (Chinese).
+- **Fixed-entry self rescue**: the console can push the official URL to a Gitee raw config file (free, reachable in China); an APK with the fixed entry configured recovers automatically on next launch even if its saved address is fully dead.
+- **LAN auto discovery**: the server answers UDP broadcasts on port 9875; the APK discovers it automatically on first launch or on failure — **on the same Wi-Fi, install and connect with zero configuration**. Provider comparison: [docs/entry-providers.md](docs/entry-providers.md) (Chinese).
 - **Full audit trail**: every node's assignee and creator, plus a timeline of create/checkout/feedback/appeal/submit/review/termination/equipment events.
 
 ## Quick start (LAN, 3 minutes)

@@ -27,7 +27,10 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.URL;
 
 /**
@@ -41,6 +44,12 @@ public class MainActivity extends Activity {
     private static final String PREFS = "taskchain";
     private static final String KEY_SERVER = "server_url";
     private static final String KEY_ENTRY = "entry_url";
+
+    /**
+     * 内置默认入口（编译前可改）：全网可达的固定网址（如花生壳隧道域名、Gitee raw 配置文件）。
+     * 留空 = 不启用；局域网场景由 UDP 自动发现覆盖，无需填写。
+     */
+    private static final String DEFAULT_ENTRY = "";
 
     private WebView webView;
     private String serverUrl = "";
@@ -95,7 +104,11 @@ public class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest request,
                                         WebResourceError error) {
                 if (request.isForMainFrame()) {
-                    resolveViaEntry(false); // 主页加载失败 → 尝试从固定入口自救
+                    // 主页加载失败：先在局域网自动发现，再试固定入口
+                    discoverOnLan(false);
+                    if (!entryUrl().isEmpty()) {
+                        resolveViaEntry(false);
+                    }
                 }
             }
         });
@@ -126,12 +139,93 @@ public class MainActivity extends Activity {
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         }
-        if (serverUrl.isEmpty() && !entryUrl().isEmpty()) {
-            resolveViaEntry(false); // 无保存地址但有固定入口：直接从入口解析
-        } else if (serverUrl.isEmpty()) {
-            askServerDialog(); // 首次启动：必须输入服务器地址
+        if (serverUrl.isEmpty()) {
+            // 全新启动：局域网 UDP 自动发现 → 内置默认入口 → 手动输入
+            Toast.makeText(this, "正在局域网搜索服务器…", Toast.LENGTH_SHORT).show();
+            discoverOnLan(true);
         } else {
             webView.loadUrl(serverUrl);
+        }
+    }
+
+    /** 局域网 UDP 自动发现：广播问询，服务器应答 "TASKCHAIN_SERVER|http://ip:port"。 */
+    private void discoverOnLan(final boolean onFailAsk) {
+        new Thread(() -> {
+            String found = null;
+            try {
+                DatagramSocket s = new DatagramSocket();
+                s.setBroadcast(true);
+                s.setSoTimeout(2500);
+                byte[] probe = "TASKCHAIN_DISCOVER".getBytes("UTF-8");
+                java.util.List<InetAddress> targets = new java.util.ArrayList<>();
+                try {
+                    targets.add(InetAddress.getByName("255.255.255.255"));
+                } catch (Exception ignored) {
+                }
+                String myIp = localIp();
+                if (myIp != null) {
+                    String[] p = myIp.split("\\.");
+                    if (p.length == 4) {
+                        try {
+                            targets.add(InetAddress.getByName(p[0] + "." + p[1] + "." + p[2] + ".255"));
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+                for (InetAddress t : targets) {
+                    try {
+                        s.send(new DatagramPacket(probe, probe.length, t, 9875));
+                    } catch (Exception ignored) {
+                    }
+                }
+                byte[] buf = new byte[256];
+                DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+                try {
+                    s.receive(pkt);
+                    String resp = new String(pkt.getData(), 0, pkt.getLength(), "UTF-8");
+                    if (resp.startsWith("TASKCHAIN_SERVER|")) {
+                        found = resp.substring("TASKCHAIN_SERVER|".length()).trim();
+                    }
+                } catch (Exception ignored) {
+                }
+                s.close();
+            } catch (Exception ignored) {
+            }
+            final String result = found;
+            runOnUiThread(() -> {
+                if (result != null && !result.isEmpty() && !result.equals(serverUrl)
+                        && result.startsWith("http")) {
+                    serverUrl = result;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_SERVER, result).apply();
+                    Toast.makeText(MainActivity.this, "已连接到服务器：" + result, Toast.LENGTH_SHORT).show();
+                    webView.loadUrl(result);
+                } else {
+                    // 发现失败：内置默认入口 → 固定入口 → 手动输入
+                    if (serverUrl.isEmpty() && !DEFAULT_ENTRY.isEmpty()) {
+                        serverUrl = DEFAULT_ENTRY;
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                .putString(KEY_SERVER, DEFAULT_ENTRY).apply();
+                        webView.loadUrl(DEFAULT_ENTRY);
+                    } else if (serverUrl.isEmpty() && !entryUrl().isEmpty()) {
+                        resolveViaEntry(onFailAsk);
+                    } else if (onFailAsk && serverUrl.isEmpty()) {
+                        askServerDialog();
+                    }
+                }
+            });
+        }).start();
+    }
+
+    private String localIp() {
+        try {
+            java.net.Socket s = new java.net.Socket();
+            s.connect(new java.net.InetSocketAddress("10.255.255.255", 1), 100);
+            String ip = s.getLocalAddress().getHostAddress();
+            s.close();
+            return ip;
+        } catch (Exception e) {
+            return null;
         }
     }
 

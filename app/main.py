@@ -1226,6 +1226,63 @@ def admin_overview(request: Request):
     return {"chains": [dict(r) for r in chains], "stats": stats}
 
 
+@app.delete("/api/admin/chains/{chain_id}")
+def admin_del_chain(chain_id: int, request: Request):
+    """删除整条任务链（仅管理员后台）：被其他链引用为前置、或仍有设备未归还的不可删。
+
+    级联清除该链的节点、前置要求、提交与证明文件、反馈申诉、时间线、终结记录与设备领用记录。
+    """
+    require_admin(request)
+    with db_ctx() as db:
+        chain = db.execute("SELECT * FROM chains WHERE id=?", (chain_id,)).fetchone()
+        if not chain:
+            raise HTTPException(404, "任务链不存在")
+        node_ids = [r["id"] for r in db.execute(
+            "SELECT id FROM nodes WHERE chain_id=?", (chain_id,)).fetchall()]
+        ph = ",".join("?" * len(node_ids)) if node_ids else "NULL"
+
+        used = db.execute(
+            f"SELECT COUNT(*) c FROM prereqs p JOIN nodes n ON n.id=p.node_id "
+            f"WHERE p.type='task' AND p.ref_node_id IN ({ph}) AND n.chain_id<>?",
+            (*node_ids, chain_id),
+        ).fetchone()["c"]
+        if used:
+            raise HTTPException(400, "其他任务链把本任务用作前置要求，不能删除")
+        act = db.execute(
+            f"SELECT COUNT(*) c FROM device_custody WHERE node_id IN ({ph}) AND returned_at IS NULL",
+            node_ids,
+        ).fetchone()["c"]
+        if act:
+            raise HTTPException(400, "该任务链仍有设备未归还，请先归还或强制释放再删除")
+
+        file_ids = [r["fid"] for r in db.execute(
+            f"SELECT nf.file_id fid FROM node_files nf WHERE nf.node_id IN ({ph}) "
+            f"UNION SELECT sf.file_id fid FROM submission_files sf "
+            f"JOIN submissions s ON s.id=sf.submission_id WHERE s.node_id IN ({ph})",
+            (*node_ids, *node_ids),
+        ).fetchall()]
+        db.execute(f"DELETE FROM submission_files WHERE submission_id IN "
+                   f"(SELECT id FROM submissions WHERE node_id IN ({ph}))", node_ids)
+        db.execute(f"DELETE FROM submissions WHERE node_id IN ({ph})", node_ids)
+        db.execute(f"DELETE FROM messages WHERE node_id IN ({ph})", node_ids)
+        db.execute(f"DELETE FROM prereqs WHERE node_id IN ({ph})", node_ids)
+        db.execute(f"DELETE FROM node_files WHERE node_id IN ({ph})", node_ids)
+        db.execute(f"DELETE FROM device_custody WHERE node_id IN ({ph})", node_ids)
+        db.execute("DELETE FROM events WHERE chain_id=?", (chain_id,))
+        db.execute("DELETE FROM terminations WHERE chain_id=?", (chain_id,))
+        db.execute("DELETE FROM nodes WHERE chain_id=?", (chain_id,))
+        db.execute("DELETE FROM chains WHERE id=?", (chain_id,))
+        for fid in file_ids:
+            row = db.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
+            if row:
+                db.execute("DELETE FROM files WHERE id=?", (fid,))
+                try:
+                    os.remove(os.path.join(UPLOAD_DIR, row["path"]))
+                except OSError:
+                    pass
+    return {"ok": True, "deleted_nodes": len(node_ids)}
+
+
 # ---------------------------------------------------------------- startup & static
 
 @app.on_event("startup")

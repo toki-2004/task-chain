@@ -303,6 +303,31 @@ def main():
     r = admin.delete(f"{BASE}/api/admin/users/{tz_id}")
     check("清理停用测试用户", r.ok, r.text)
 
+    # 任务链删除（管理员后台专属）
+    r = ls.delete(f"{BASE}/api/admin/chains/{c4}")
+    check("非管理员不能删除任务链", r.status_code == 403, f"got {r.status_code}")
+    r = admin.delete(f"{BASE}/api/admin/chains/{c1}")
+    check("被其他链引用为前置的链不能删", r.status_code == 400, r.text)
+    devices = admin.get(f"{BASE}/api/devices").json()
+    tester = next(d for d in devices if d["name"] == "测试仪-03")
+    r = ww.post(f"{BASE}/api/tasks", json={"title": "占用中的链", "assignee_id": uid["wangwu"],
+                                           "prereqs": [{"type": "device", "device_id": tester["id"]}]})
+    c_busy, n_busy = r.json()["chain_id"], r.json()["node_id"]
+    r = ww.post(f"{BASE}/api/devices/{tester['id']}/checkout", json={"node_id": n_busy})
+    check("为待删链领用设备", r.ok, r.text)
+    r = admin.delete(f"{BASE}/api/admin/chains/{c_busy}")
+    check("有设备未归还的链不能删", r.status_code == 400, r.text)
+    r = ww.post(f"{BASE}/api/devices/{tester['id']}/return")
+    check("归还设备", r.ok, r.text)
+    r = ww.post(f"{BASE}/api/tasks", json={"title": "一次性待删链", "assignee_id": uid["wangwu"]})
+    c_del, n_del = r.json()["chain_id"], r.json()["node_id"]
+    r = admin.delete(f"{BASE}/api/admin/chains/{c_del}")
+    check("管理员删除无引用链", r.ok and r.json()["deleted_nodes"] == 1, r.text)
+    r = ww.get(f"{BASE}/api/nodes/{n_del}")
+    check("删除后节点详情 404", r.status_code == 404, f"got {r.status_code}")
+    ov = admin.get(f"{BASE}/api/admin/overview").json()
+    check("总览链数已减少", ov["stats"]["chains"] == 6, str(ov["stats"]["chains"]))
+
     # 列表桶
     for s, name in [(ls, "李四"), (zs, "张三"), (ww, "王五")]:
         for b in ["unfinished", "pending", "done"]:

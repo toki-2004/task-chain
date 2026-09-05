@@ -1075,13 +1075,25 @@ async function renderAdmin(app) {
         ${[["任务链", ov.stats.chains], ["进行中", ov.stats.active], ["设备", ov.stats.devices], ["用户", ov.stats.users]].map(([k, v]) =>
         `<div style="flex:1"><div style="font-size:22px;font-weight:700">${v}</div><div style="font-size:12px;color:var(--muted)">${k}</div></div>`).join("")}
       </div></div>` +
-        ov.chains.map((c) => `<div class="card">
+        (ov.chains.map((c) => `<div class="card">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             ${c.status === "terminated" ? '<span class="chip grey">已结束</span>' : '<span class="chip blue">进行中</span>'}
             <span class="chip">${c.node_count} 节点</span><span>发布：${esc(c.creator_name || "?")}</span>
+            <span style="flex:1"></span>
+            <button class="btn plain small" data-delchain="${c.id}" style="color:var(--red)">删除</button>
           </div>
           <div class="card-title" style="margin-top:5px">${esc(c.title)}</div>
-        </div>`).join("") || `<div class="empty">暂无任务</div>`;
+        </div>`).join("") || `<div class="empty">暂无任务</div>`);
+      body.querySelectorAll("[data-delchain]").forEach((el) => {
+        el.onclick = () => confirmModal("删除任务链",
+          "将永久删除该链全部节点、提交证明、反馈申诉与时间线，不可恢复；设备领用记录一并清除。\n被其他任务引用为前置、或仍有设备未归还时无法删除。确定删除？",
+          "删除", "danger", async () => {
+            try {
+              await api("DELETE", `/api/admin/chains/${el.dataset.delchain}`);
+              toast("任务链已删除"); load();
+            } catch (e) { toast(e.message, true); }
+          });
+      });
     }
   }
   await load().catch((e) => toast(e.message, true));

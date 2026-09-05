@@ -83,6 +83,20 @@ def main():
     r = requests.get(f"{BASE}/api/appconfig")
     check("可清空官方地址", r.json()["app_server_url"] == "", r.text)
 
+    # ---- 固定入口（Gitee）同步配置 ----
+    r = tu.put(f"{BASE}/api/admin/entrysync", json={"owner": "x", "repo": "y", "path": "p", "token": "t"})
+    check("非管理员不能改入口配置", r.status_code == 403, f"got {r.status_code}")
+    r = admin.put(f"{BASE}/api/admin/entrysync",
+                  json={"owner": "toki", "repo": "entry", "path": "app/config.json", "token": "gtoken123456"})
+    check("保存入口同步配置", r.ok, r.text)
+    r = admin.get(f"{BASE}/api/admin/entrysync")
+    check("入口配置读取且 token 脱敏", r.ok and r.json()["token"] == "gtok****"
+          and "gitee.com/toki/entry/raw/master/app/config.json" in r.json()["raw_url"], r.text)
+    admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": "http://192.168.1.50:8000"})
+    r = admin.post(f"{BASE}/api/admin/entrysync/push")
+    check("入口推送返回结构(ok/message)", r.ok and "ok" in r.json() and "message" in r.json(), r.text)
+    admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": ""})
+
     # ---- 开放注册 ----
     s = requests.Session()
     r = s.post(f"{BASE}/api/register", json={"username": "newguy", "name": "新用户", "password": "register8"})

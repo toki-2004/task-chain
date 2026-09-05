@@ -1223,9 +1223,110 @@ def admin_set_appconfig(body: AppConfigBody, request: Request):
             raise HTTPException(400, "地址必须以 http:// 或 https:// 开头")
         while url.endswith("/"):
             url = url[:-1]
+    push_result = None
     with db_ctx() as db:
         _set_config(db, "app_server_url", url)
-    return {"ok": True, "app_server_url": url}
+        entry_owner = _get_config(db, "entry_owner")
+        if url and entry_owner:
+            push_result = _gitee_push_config(db, url)
+    resp = {"ok": True, "app_server_url": url}
+    if push_result is not None:
+        resp["entry_push"] = push_result
+    return resp
+
+
+# ---- 固定入口（Gitee raw 配置文件）：APK 的 bootstrap 指针 ----
+
+ENTRY_KEYS = ("entry_owner", "entry_repo", "entry_path", "entry_branch", "entry_token")
+
+
+def _gitee_push_config(db, server_url):
+    """把当前官方地址推送到 Gitee 仓库 raw 文件。返回 {ok, message}，不抛异常。"""
+    owner = _get_config(db, "entry_owner")
+    repo = _get_config(db, "entry_repo")
+    path = _get_config(db, "entry_path")
+    branch = _get_config(db, "entry_branch") or "master"
+    token = _get_config(db, "entry_token")
+    if not (owner and repo and path and token):
+        return {"ok": False, "message": "入口同步配置不完整（owner/repo/path/token）"}
+    import base64
+    import json as _json
+    import urllib.error
+    import urllib.request
+    api = f"https://gitee.com/api/v5/repos/{owner}/{repo}/contents/{path}"
+    b64 = base64.b64encode(_json.dumps({"app_server_url": server_url}).encode("utf-8")).decode()
+    try:
+        sha = None
+        try:
+            with urllib.request.urlopen(f"{api}?access_token={token}&ref={branch}", timeout=10) as r:
+                sha = _json.loads(r.read().decode("utf-8")).get("sha")
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                return {"ok": False, "message": f"Gitee 读取失败 HTTP {e.code}（检查 token/仓库权限）"}
+        payload = {"access_token": token, "content": b64, "branch": branch,
+                   "message": "update app_server_url by task-chain"}
+        if sha:
+            payload["sha"] = sha
+        req = urllib.request.Request(
+            api, data=_json.dumps(payload).encode("utf-8"),
+            method="PUT" if sha else "POST",
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+        return {"ok": True, "message": "已推送到 Gitee 入口文件"}
+    except Exception as e:
+        return {"ok": False, "message": f"推送失败：{e}"}
+
+
+class EntrySyncBody(BaseModel):
+    owner: str = ""
+    repo: str = ""
+    path: str = ""
+    branch: str = "master"
+    token: str = ""  # 留空 = 保持原 token
+
+
+@app.get("/api/admin/entrysync")
+def admin_get_entrysync(request: Request):
+    require_admin(request)
+    with db_ctx() as db:
+        cfg = {k: _get_config(db, k) for k in ENTRY_KEYS}
+        app_url = _get_config(db, "app_server_url")
+    token = cfg["entry_token"]
+    configured = bool(cfg["entry_owner"] and cfg["entry_repo"] and cfg["entry_path"] and token)
+    raw_url = (f"https://gitee.com/{cfg['entry_owner']}/{cfg['entry_repo']}"
+               f"/raw/{cfg['entry_branch'] or 'master'}/{cfg['entry_path']}") if configured else ""
+    return {
+        "entry_owner": cfg["entry_owner"], "entry_repo": cfg["entry_repo"],
+        "entry_path": cfg["entry_path"], "entry_branch": cfg["entry_branch"],
+        "token": (token[:4] + "****") if token else "",
+        "configured": configured, "raw_url": raw_url,
+        "app_server_url": app_url,
+    }
+
+
+@app.put("/api/admin/entrysync")
+def admin_set_entrysync(body: EntrySyncBody, request: Request):
+    require_admin(request)
+    with db_ctx() as db:
+        if body.token.strip():
+            _set_config(db, "entry_token", body.token.strip())
+        _set_config(db, "entry_owner", body.owner.strip())
+        _set_config(db, "entry_repo", body.repo.strip())
+        _set_config(db, "entry_path", body.path.strip())
+        _set_config(db, "entry_branch", body.branch.strip() or "master")
+    return {"ok": True}
+
+
+@app.post("/api/admin/entrysync/push")
+def admin_entrysync_push(request: Request):
+    require_admin(request)
+    with db_ctx() as db:
+        url = _get_config(db, "app_server_url")
+        if not url:
+            raise HTTPException(400, "请先设置 APK 官方访问地址")
+        result = _gitee_push_config(db, url)
+    return result
 
 
 @app.get("/api/admin/appconfig/qr.svg")

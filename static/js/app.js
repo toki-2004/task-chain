@@ -1099,6 +1099,44 @@ async function renderAdmin(app) {
           `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">手机浏览器扫码可直接打开（网页版）</div>
            <img src="/api/admin/appconfig/qr.svg" alt="二维码" style="width:190px;height:190px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px">`;
       }
+      /* 固定入口（Gitee raw 指针） */
+      const es = await GET("/api/admin/entrysync");
+      const card = body.querySelector(".card");
+      card.insertAdjacentHTML("afterend", `<div class="card">
+        <div class="section-title" style="margin:0 0 6px">固定入口（Gitee 配置文件，供 APK 失联自救）</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+          把官方地址写进 Gitee 仓库的一个 JSON 文件，APK 里配好同一文件地址后，即使保存的地址彻底失联，
+          也能在下次启动时自动拿到新地址自救。需要：Gitee 账号 → 新建一个<b>公开</b>仓库 →
+          设置里生成<b>私人令牌</b>（勾选 projects 基础权限即可）。</div>
+        <div class="form-item"><input id="es-owner" placeholder="Gitee 用户名" value="${esc(es.entry_owner)}"></div>
+        <div class="form-item"><input id="es-repo" placeholder="仓库名（公开）" value="${esc(es.entry_repo)}"></div>
+        <div class="form-item"><input id="es-path" placeholder="文件路径，如 app/config.json" value="${esc(es.entry_path)}"></div>
+        <div class="form-item"><input id="es-branch" placeholder="分支（默认 master）" value="${esc(es.entry_branch)}"></div>
+        <div class="form-item"><input id="es-token" placeholder="${es.token ? "私人令牌（已保存 " + esc(es.token) + "，留空保持不变）" : "Gitee 私人令牌"}"></div>
+        <div class="btn-row">
+          <button class="btn plain" id="es-save">保存同步配置</button>
+          <button class="btn" id="es-push">立即推送当前地址</button>
+        </div>
+        ${es.raw_url ? `<div style="font-size:12px;color:var(--muted);margin-top:8px;word-break:break-all">入口文件地址（填进 APK 的「固定入口」）：<br>${esc(es.raw_url)}</div>` : ""}
+      </div>`);
+      body.querySelector("#es-save").onclick = async () => {
+        try {
+          await api("PUT", "/api/admin/entrysync", {
+            owner: body.querySelector("#es-owner").value.trim(),
+            repo: body.querySelector("#es-repo").value.trim(),
+            path: body.querySelector("#es-path").value.trim(),
+            branch: body.querySelector("#es-branch").value.trim() || "master",
+            token: body.querySelector("#es-token").value.trim(),
+          });
+          toast("同步配置已保存"); load();
+        } catch (e) { toast(e.message, true); }
+      };
+      body.querySelector("#es-push").onclick = async () => {
+        try {
+          const r = await POST("/api/admin/entrysync/push");
+          toast(r.message || (r.ok ? "已推送" : "推送失败"), !r.ok);
+        } catch (e) { toast(e.message, true); }
+      };
     } else {
       const ov = await GET("/api/admin/overview");
       body.innerHTML = `<div class="card"><div style="display:flex;text-align:center">

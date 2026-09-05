@@ -1,7 +1,9 @@
 package com.toki.taskchain;
 
 import android.app.Activity;
+import android.app.AlarmManager;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -387,19 +389,21 @@ public class MainActivity extends Activity {
         return url;
     }
 
-    /** 通知服务 + 系统通知权限（API 33+ 需运行时申请）。 */
+    /** 系统通知权限（API 33+ 需运行时申请）+ 注册后台闹钟检查（约 15 分钟一次，无常驻图标）。 */
     private void startNotifyService() {
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
                         != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 100);
         }
-        Intent si = new Intent(this, NotifyService.class);
-        if (Build.VERSION.SDK_INT >= 26) {
-            startForegroundService(si);
-        } else {
-            startService(si);
-        }
+        AlarmManager am = getSystemService(AlarmManager.class);
+        PendingIntent pi = PendingIntent.getBroadcast(this, 10,
+                new Intent(this, NotifyReceiver.class),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        am.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP, 20000,
+                15 * 60 * 1000L, pi);
+        // 打开 App 立即检查一次
+        new Thread(() -> NotifyPoller.poll(this)).start();
     }
 
     /** 通知点击：直达对应任务详情。 */
@@ -414,6 +418,13 @@ public class MainActivity extends Activity {
             serverUrl = base;
             webView.loadUrl(base + "/#/node/" + nid);
         }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        // 切到后台时立即检查一次，之后由系统闹钟约 15 分钟一次
+        new Thread(() -> NotifyPoller.poll(this)).start();
     }
 
     @Override

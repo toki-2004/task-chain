@@ -1,0 +1,32 @@
+# 本地运行产物
+.venv/
+data.db
+data.db-wal
+data.db-shm
+uploads/
+__pycache__/
+*.pyc
+
+# 交接文档不入库
+HANDOVER.md
+
+# Android 构建产物
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/app/src/main/res/mipmap*/ic_launcher.png.bak
+*.apk
+*.keystore
+.gradle/
+
+# 穿透运行产物
+tunnel/frpc.log
+tunnel/frpc.toml
+
+# 运行/测试产物
+server.log
+server.err.log
+server.pid
+test_result.txt

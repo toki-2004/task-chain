@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TaskChain" parent="android:Theme.Material.Light.DarkActionBar">
+        <item name="android:colorPrimary">#1F6FEB</item>
+        <item name="android:colorPrimaryDark">#1A5CD0</item>
+        <item name="android:statusBarColor">#1A5CD0</item>
+        <item name="android:windowBackground">#F4F6F9</item>
+    </style>
+</resources>

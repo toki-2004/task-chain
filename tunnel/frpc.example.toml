@@ -1,0 +1,22 @@
+# frp 客户端配置模板（复制为 frpc.toml 后填入你的信息）
+# 适用 frp >= 0.52（TOML 格式）
+# 下载 frp: https://github.com/fatedier/frp/releases （Windows 下载 windows_amd64 版）
+
+serverAddr = "你的VPS公网IP"      # 例如 "123.45.67.89"
+serverPort = 7000                 # frps 服务端监听端口
+auth.token = "与frps一致的密钥"    # 务必改成强随机串
+
+[[proxies]]
+name = "taskchain-web"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8000                  # 本机任务系统端口
+remotePort = 8000                 # VPS 上对外暴露的端口
+
+# 配好后：
+# 1. 在 VPS 上运行 frps（服务端），配置 serverPort=7000 与相同 token
+# 2. 本机双击 start_tunnel.bat
+# 3. 手机 App 里服务器地址填 http://你的VPS公网IP:8000
+#
+# 安全提醒：暴露到公网前，务必把 admin 与所有用户密码改为强密码，
+# 并尽量在 frps 前再加一层 HTTPS 反代（如 nginx + certbot）。

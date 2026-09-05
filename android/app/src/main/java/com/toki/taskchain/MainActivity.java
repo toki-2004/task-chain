@@ -72,6 +72,10 @@ public class MainActivity extends Activity {
     /** https 尝试失败记录（避免 http↔https 往返死循环） */
     private String lastFailedHttps = "";
     private String lastHttpFallback = "";
+    /** 本次主帧加载是否失败：区分「失败后的页面回调」与「局域网真实渲染成功」 */
+    private volatile boolean mainFrameLoadFailed = false;
+    /** 局域网地址连续原地重试次数：超过上限才允许切公网自救，避免局域网抖动反复横跳 */
+    private int lanRetryCount = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -137,12 +141,17 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                mainFrameLoadFailed = false;
                 showLoading(true);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 showLoading(false);
+                // 无主帧错误的加载结束 = 当前地址真实可用，清零局域网重试计数
+                if (isLanAddress(serverUrl) && !mainFrameLoadFailed) {
+                    lanRetryCount = 0;
+                }
                 postLoadChecks(url); // 局域网直连优先，其次跟随官方地址
             }
 
@@ -159,6 +168,7 @@ public class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest request,
                                         WebResourceError error) {
                 if (request.isForMainFrame()) {
+                    mainFrameLoadFailed = true;
                     // https 尝试失败：回落到原 http 地址再试一次
                     if (serverUrl.startsWith("https://") && !lastHttpFallback.isEmpty()
                             && serverUrl.endsWith(lastHttpFallback.substring(7))) {
@@ -463,20 +473,38 @@ public class MainActivity extends Activity {
 
     /** 局域网 UDP 自动发现：广播问询，服务器应答 "TASKCHAIN_SERVER|http://ip:port"。 */
     private void discoverOnLan(final boolean onFailAsk) {
+        final boolean wasLan = isLanAddress(serverUrl); // 调用方均为主线程：此刻若在局域网，说明它刚加载失败
         new Thread(() -> {
-            final String result = udpDiscover();
+            String result = udpDiscover();
+            if (result == null && wasLan) {
+                // 局域网地址加载失败：单次 UDP 探测可能抖动，间隔重探一次再放弃局域网
+                try {
+                    Thread.sleep(2500);
+                } catch (Exception ignored) {
+                }
+                result = udpDiscover();
+            }
+            final String lanResult = result;
             runOnUiThread(() -> {
-                if (result != null && !result.isEmpty() && !result.equals(serverUrl)
-                        && result.startsWith("http")) {
+                if (lanResult != null && !lanResult.isEmpty() && !lanResult.equals(serverUrl)
+                        && lanResult.startsWith("http")) {
                     if (!autoSwitchAllowed()) {
                         return;
                     }
                     markSwitch();
-                    serverUrl = result;
+                    serverUrl = lanResult;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                            .putString(KEY_SERVER, result).apply();
-                    Toast.makeText(MainActivity.this, "已连接到服务器：" + result, Toast.LENGTH_SHORT).show();
-                    loadServerUrl(result);
+                            .putString(KEY_SERVER, lanResult).apply();
+                    Toast.makeText(MainActivity.this, "已连接到服务器：" + lanResult,
+                            Toast.LENGTH_SHORT).show();
+                    loadServerUrl(lanResult);
+                    return;
+                }
+                // 探测到的就是当前局域网地址：网页加载失败但服务器仍在 → 原地重试，不切公网
+                if (lanResult != null && isLanAddress(serverUrl)
+                        && lanResult.equals(serverUrl) && lanRetryCount < 2) {
+                    lanRetryCount++;
+                    loadServerUrl(serverUrl);
                     return;
                 }
                 // 发现失败：内置默认入口 → 固定入口 → 救援邮箱 → 手动

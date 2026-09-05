@@ -145,7 +145,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 showLoading(false);
-                syncOfficialUrl(); // 联网成功时检查管理后台设置的官方地址
+                postLoadChecks(url); // 局域网直连优先，其次跟随官方地址
             }
 
             @Override
@@ -474,50 +474,56 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    /** 局域网 UDP 自动发现：广播问询，服务器应答 "TASKCHAIN_SERVER|http://ip:port"。 */
-    private void discoverOnLan(final boolean onFailAsk) {
-        new Thread(() -> {
-            String found = null;
+    /** 同步 UDP 探测：返回发现的局域网服务器地址，未发现返回 null（须在后台线程调用）。 */
+    private String udpDiscover() {
+        try {
+            DatagramSocket s = new DatagramSocket();
+            s.setBroadcast(true);
+            s.setSoTimeout(2500);
+            byte[] probe = "TASKCHAIN_DISCOVER".getBytes("UTF-8");
+            java.util.List<InetAddress> targets = new java.util.ArrayList<>();
             try {
-                DatagramSocket s = new DatagramSocket();
-                s.setBroadcast(true);
-                s.setSoTimeout(2500);
-                byte[] probe = "TASKCHAIN_DISCOVER".getBytes("UTF-8");
-                java.util.List<InetAddress> targets = new java.util.ArrayList<>();
-                try {
-                    targets.add(InetAddress.getByName("255.255.255.255"));
-                } catch (Exception ignored) {
-                }
-                String myIp = localIp();
-                if (myIp != null) {
-                    String[] p = myIp.split("\\.");
-                    if (p.length == 4) {
-                        try {
-                            targets.add(InetAddress.getByName(p[0] + "." + p[1] + "." + p[2] + ".255"));
-                        } catch (Exception ignored) {
-                        }
-                    }
-                }
-                for (InetAddress t : targets) {
+                targets.add(InetAddress.getByName("255.255.255.255"));
+            } catch (Exception ignored) {
+            }
+            String myIp = localIp();
+            if (myIp != null) {
+                String[] p = myIp.split("\\.");
+                if (p.length == 4) {
                     try {
-                        s.send(new DatagramPacket(probe, probe.length, t, 9875));
+                        targets.add(InetAddress.getByName(p[0] + "." + p[1] + "." + p[2] + ".255"));
                     } catch (Exception ignored) {
                     }
                 }
-                byte[] buf = new byte[256];
-                DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+            }
+            for (InetAddress t : targets) {
                 try {
-                    s.receive(pkt);
-                    String resp = new String(pkt.getData(), 0, pkt.getLength(), "UTF-8");
-                    if (resp.startsWith("TASKCHAIN_SERVER|")) {
-                        found = resp.substring("TASKCHAIN_SERVER|".length()).trim();
-                    }
+                    s.send(new DatagramPacket(probe, probe.length, t, 9875));
                 } catch (Exception ignored) {
                 }
-                s.close();
+            }
+            byte[] buf = new byte[256];
+            DatagramPacket pkt = new DatagramPacket(buf, buf.length);
+            String found = null;
+            try {
+                s.receive(pkt);
+                String resp = new String(pkt.getData(), 0, pkt.getLength(), "UTF-8");
+                if (resp.startsWith("TASKCHAIN_SERVER|")) {
+                    found = resp.substring("TASKCHAIN_SERVER|".length()).trim();
+                }
             } catch (Exception ignored) {
             }
-            final String result = found;
+            s.close();
+            return found;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** 局域网 UDP 自动发现：广播问询，服务器应答 "TASKCHAIN_SERVER|http://ip:port"。 */
+    private void discoverOnLan(final boolean onFailAsk) {
+        new Thread(() -> {
+            final String result = udpDiscover();
             runOnUiThread(() -> {
                 if (result != null && !result.isEmpty() && !result.equals(serverUrl)
                         && result.startsWith("http")) {
@@ -623,10 +629,35 @@ public class MainActivity extends Activity {
     }
 
     /** 从当前服务器拉取官方访问地址；不同则自动切换（管理后台可改，本方法静默失败）。 */
+    /** 页面加载完成后的地址策略（局域网直连优先）：
+     *  当前走局域网 → 保持，不被拉回公网；
+     *  当前走公网 → 静默探测局域网，发现直连地址则切回；未发现则跟随官方地址。 */
+    private void postLoadChecks(String url) {
+        if (isLanAddress(url)) {
+            return; // 局域网直连优先：不被拉回公网官方地址
+        }
+        new Thread(() -> {
+            final String lan = udpDiscover();
+            runOnUiThread(() -> {
+                if (lan != null && !lan.isEmpty() && !lan.equals(serverUrl)
+                        && lan.startsWith("http")) {
+                    // 家里 WiFi 可直连：切回局域网（更快、不占隧道流量）
+                    serverUrl = lan;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_SERVER, lan).apply();
+                    Toast.makeText(MainActivity.this, "已切换到局域网直连：" + lan, Toast.LENGTH_SHORT).show();
+                    loadServerUrl(lan);
+                    return;
+                }
+                syncOfficialUrl(); // 局域网未发现 → 跟随官方地址
+            });
+        }).start();
+    }
+
     private void syncOfficialUrl() {
         final String current = serverUrl;
-        if (current.isEmpty()) {
-            return;
+        if (current.isEmpty() || isLanAddress(current)) {
+            return; // 局域网直连优先级高于官方地址，不拉回公网
         }
         new Thread(() -> {
             try {

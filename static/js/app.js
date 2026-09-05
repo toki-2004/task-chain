@@ -1485,11 +1485,13 @@ setInterval(async () => {
   await refreshMe();
   updateTabBadge();
 }, 30000);
+let visRenderTimer = null;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
   const hash = location.hash || "#/home";
   if (hash.startsWith("#/create")) { refreshMe(); return; } // 表单页不能重渲染，避免清空输入
-  render();
+  clearTimeout(visRenderTimer);
+  visRenderTimer = setTimeout(() => render(), 400);
 });
 
 render();

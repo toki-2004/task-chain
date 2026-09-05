@@ -31,3 +31,4 @@ server.err.log
 server.pid
 test_result.txt
 dist/
+tunnel_cert.pem

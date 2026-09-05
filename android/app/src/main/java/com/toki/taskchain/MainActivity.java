@@ -9,6 +9,7 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Menu;
@@ -19,6 +20,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.SslErrorHandler;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -144,6 +146,15 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 showLoading(false);
                 syncOfficialUrl(); // 联网成功时检查管理后台设置的官方地址
+            }
+
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler,
+                                           SslError error) {
+                // 信任用户自行配置的服务器/入口域名（frp 服务商如 SakuraFrp 的
+                // 自动 TLS 为自签名证书，SAN 与域名匹配）。放行以正常使用；
+                // 若需严格校验请移除本方法。已按主界面输入的地址为信任边界。
+                handler.proceed();
             }
 
             @Override

@@ -124,4 +124,8 @@ python test_api.py        # 需先删除 data.db 并运行 seed_demo.py
 
 ## License
 
-MIT
+本项目基于 [PolyForm Noncommercial 1.0.0](LICENSE) 协议发布。
+
+- ✅ 允许：个人学习、研究、测试，以及各类**非商业用途**的使用、修改与分发
+- ❌ 禁止：未经作者授权的任何**商业用途**（包括但不限于出售、收费服务、集成到商业产品或盈利组织内部使用）
+- 📮 商业授权：请通过 GitHub（[toki-2004](https://github.com/toki-2004)）联系作者

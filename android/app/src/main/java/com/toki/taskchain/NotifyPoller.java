@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.webkit.CookieManager;
 
 import org.json.JSONArray;
@@ -66,8 +67,70 @@ public final class NotifyPoller {
                 }
             }
             sp.edit().putLong("notify_last_id", newest).apply();
+            checkApkUpdate(ctx, server);
         } catch (Exception ignored) {
         }
+    }
+
+    /** 服务器分发了更新的 APK 时弹通知提醒（同一版本只提醒一次）。 */
+    private static void checkApkUpdate(Context ctx, String server) {
+        android.content.SharedPreferences sp = ctx.getSharedPreferences("taskchain", Context.MODE_PRIVATE);
+        if (server.isEmpty()) {
+            return;
+        }
+        String cur;
+        try {
+            cur = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return;
+        }
+        try {
+            HttpURLConnection conn = (HttpURLConnection)
+                    new URL(server + "/apk/info").openConnection();
+            conn.setConnectTimeout(6000);
+            conn.setReadTimeout(8000);
+            BufferedReader br = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) {
+                sb.append(line);
+            }
+            br.close();
+            String ver = new JSONObject(sb.toString()).optString("version", "").trim();
+            if (ver.isEmpty() || !isNewer(ver, cur)
+                    || ver.equals(sp.getString("update_notified", ""))) {
+                return;
+            }
+            sp.edit().putString("update_notified", ver).apply();
+            NotificationManager nm = ctx.getSystemService(NotificationManager.class);
+            ensureChannel(nm);
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(server + "/apk"));
+            PendingIntent pi = PendingIntent.getActivity(ctx, 1001, intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            Notification.Builder b = builder(ctx);
+            b.setContentTitle("发现新版本 " + ver)
+                    .setContentText("当前 " + cur + "，点击下载更新")
+                    .setContentIntent(pi);
+            nm.notify(1001, b.build());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static boolean isNewer(String remote, String local) {
+        String[] r = remote.replaceFirst("^[vV]", "").trim().split("\\.");
+        String[] l = (local == null ? "0.0.0" : local.trim()).split("\\.");
+        int n = Math.max(r.length, l.length);
+        for (int i = 0; i < n; i++) {
+            String rs = i < r.length ? r[i].replaceAll("\\D", "") : "";
+            String ls = i < l.length ? l[i].replaceAll("\\D", "") : "";
+            int ri = rs.isEmpty() ? 0 : Integer.parseInt(rs);
+            int li = ls.isEmpty() ? 0 : Integer.parseInt(ls);
+            if (ri != li) {
+                return ri > li;
+            }
+        }
+        return false;
     }
 
     private static void notifyOne(Context ctx, NotificationManager nm, JSONObject it) {

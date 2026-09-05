@@ -319,17 +319,21 @@ async function renderHome(app) {
   };
 
   async function refresh() {
+    const rsq = renderSeqNow();
     try {
       const [u, p, d] = await Promise.all([
         GET("/api/tasks?bucket=unfinished"),
         GET("/api/tasks?bucket=pending"),
         GET("/api/tasks?bucket=done"),
       ]);
+      if (renderSeqNow() !== rsq) return;
       cache.unfinished = u.tasks; cache.done = d.tasks;
       cache.pending = p.tasks; cache.terminations = p.terminations || []; cache.feedback = p.feedback || [];
       await refreshMe();
+      if (renderSeqNow() !== rsq) return;
       updateTabBadge();
     } catch (e) { /* 静默 */ }
+    if (renderSeqNow() !== rsq) return;
     drawSeg();
     drawList();
   }
@@ -369,9 +373,11 @@ async function renderCreate(app) {
   const prereqs = []; // {type, ref_node_id|device_id, label, sub, penalty_text, penalty_url}
   let attachments = []; // {id,name}
   let users = [], devices = [], pickNodes = [];
+  const crsq = renderSeqNow();
   try {
     [users, devices, pickNodes] = await Promise.all([GET("/api/users"), GET("/api/devices"), GET("/api/pick/nodes")]);
   } catch (e) { toast(e.message, true); }
+  if (renderSeqNow() !== crsq) return;
   const freeDevices = devices;
 
   app.innerHTML = `<div class="topbar"><span class="back" data-back>‹</span>${chainCtx ? "创建下一节点" : "发布新任务"}<div class="spacer"></div></div>
@@ -527,6 +533,7 @@ const EVENT_LABEL = {
 };
 
 async function renderNode(app, nodeId) {
+  const rsq = renderSeqNow();
   app.innerHTML = `<div class="topbar"><span class="back" data-back>‹</span>任务详情</div><div class="page"><div class="empty">加载中…</div></div>${tabBar("")}`;
   bindTabBar(app);
   app.querySelector("[data-back]").onclick = () => { if (history.length > 1) history.back(); else location.hash = "#/home"; };
@@ -534,6 +541,7 @@ async function renderNode(app, nodeId) {
   try { d = await GET("/api/nodes/" + nodeId); } catch (e) {
     app.querySelector(".page").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return;
   }
+  if (renderSeqNow() !== rsq) return;
   const { chain, nodes, node, prereqs, attachments, submissions, messages, events, perms, termination } = d;
   const di = deadlineInfo(node.deadline);
   const page = app.querySelector(".page");
@@ -959,9 +967,11 @@ async function renderDevices(app) {
   await loadDeviceList(app);
 }
 async function loadDeviceList(app) {
+  const rsq = renderSeqNow();
   const box = app.querySelector("#dev-list");
   try {
     const devices = await GET("/api/devices");
+    if (renderSeqNow() !== rsq) return;
     box.innerHTML = devices.length ? devices.map((d) => {
       const c = d.custody;
       return `<div class="card task-card" data-dev="${d.id}">
@@ -981,6 +991,7 @@ async function loadDeviceList(app) {
 }
 
 async function renderDevice(app, did) {
+  const rsq = renderSeqNow();
   app.innerHTML = `<div class="topbar"><span class="back" data-back>‹</span>设备详情</div><div class="page"><div class="empty">加载中…</div></div>${tabBar("devices")}`;
   bindTabBar(app);
   app.querySelector("[data-back]").onclick = () => history.back();
@@ -988,6 +999,7 @@ async function renderDevice(app, did) {
   try { d = await GET("/api/devices/" + did); } catch (e) {
     app.querySelector(".page").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return;
   }
+  if (renderSeqNow() !== rsq) return;
   const c = d.custody;
   const page = app.querySelector(".page");
   let html = `<div class="card">
@@ -1071,6 +1083,7 @@ async function renderMe(app) {
 
 /* ================= 我的发布 ================= */
 async function renderMyPub(app) {
+  const rsq = renderSeqNow();
   app.innerHTML = `<div class="topbar"><span class="back" data-back>‹</span>我的发布</div>
     <div class="page" id="pub-list"><div class="empty">加载中…</div></div>${tabBar("me")}`;
   bindTabBar(app);
@@ -1078,6 +1091,7 @@ async function renderMyPub(app) {
   const box = app.querySelector("#pub-list");
   try {
     const d = await GET("/api/mypub");
+    if (renderSeqNow() !== rsq) return;
     let html = "";
     if (d.chains.length) {
       html += d.chains.map((item) => {
@@ -1125,8 +1139,11 @@ async function renderAdmin(app) {
   drawSeg();
 
   async function load() {
+    const rsq = renderSeqNow();
+    const stale = () => renderSeqNow() !== rsq;
     if (tab === "users") {
       const users = await GET("/api/admin/users");
+      if (stale()) return;
       body.innerHTML = `<button class="btn block" id="add-user" style="margin-bottom:10px">＋ 新增用户</button>` +
         users.map((u) => {
           const isSelf = u.id === ME.user.id;
@@ -1211,6 +1228,7 @@ async function renderAdmin(app) {
       });
     } else if (tab === "devices") {
       const devices = await GET("/api/devices");
+      if (stale()) return;
       body.innerHTML = `<button class="btn block" id="add-dev" style="margin-bottom:10px">＋ 注册设备</button>` +
         (devices.length ? devices.map((d) => {
           const c = d.custody;
@@ -1257,6 +1275,7 @@ async function renderAdmin(app) {
       });
     } else if (tab === "appaddr") {
       const cfg = await GET("/api/admin/appconfig");
+      if (stale()) return;
       body.innerHTML = `<div class="card">
         <div class="section-title" style="margin:0 0 6px">APK 端官方访问地址</div>
         <div class="form-item"><input id="ac-url" placeholder="http://192.168.x.x:8000 或穿透地址" value="${esc(cfg.app_server_url)}"></div>
@@ -1383,6 +1402,7 @@ async function renderAdmin(app) {
       };
     } else {
       const ov = await GET("/api/admin/overview");
+      if (stale()) return;
       body.innerHTML = `<div class="card"><div style="display:flex;text-align:center">
         ${[["任务链", ov.stats.chains], ["进行中", ov.stats.active], ["设备", ov.stats.devices], ["用户", ov.stats.users]].map(([k, v]) =>
         `<div style="flex:1"><div style="font-size:22px;font-weight:700">${v}</div><div style="font-size:12px;color:var(--muted)">${k}</div></div>`).join("")}
@@ -1426,8 +1446,11 @@ const routes = [
 ];
 
 let renderSeq = 0;
+function renderSeqNow() { return window.__renderSeq || 0; }
+
 async function render() {
   const seq = ++renderSeq;
+  window.__renderSeq = seq;
   const app = document.getElementById("app");
   const hash = location.hash || "#/home";
   if (!ME) {
@@ -1439,7 +1462,11 @@ async function render() {
     const m = hash.match(re);
     if (m) {
       try { await fn(app, m); } catch (e) { toast(e.message, true); }
-      if (seq === renderSeq) window.scrollTo(0, 0);
+      if (seq === renderSeq) {
+        window.scrollTo(0, 0);
+      } else {
+        render(); // 渲染期间有更新的请求排队：重渲染以恢复最终一致
+      }
       return;
     }
   }

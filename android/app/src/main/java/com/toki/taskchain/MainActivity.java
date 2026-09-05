@@ -64,8 +64,6 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_ENTRY = "";
     /** 救援邮件主题标记（与服务端 RESCUE_SUBJECT 一致，全 ASCII） */
     private static final String RESCUE_SUBJECT = "task-chain address update";
-    private static final String UPDATE_API = "https://api.github.com/repos/toki-2004/task-chain/releases/latest";
-    private static final String RELEASE_PAGE = "https://github.com/toki-2004/task-chain/releases/latest";
 
     private WebView webView;
     private String serverUrl = "";
@@ -217,78 +215,23 @@ public class MainActivity extends Activity {
         checkForUpdate(false); // 启动静默检查新版本
     }
 
-    /** 检查更新：优先问服务器 /apk/info（国内直连，APK 由服务器分发）；
-     *  服务器无分发时回退 GitHub Releases API。发现新版本弹窗引导下载。 */
+    /** 检查更新：只走服务器分发（/apk/info 版本查询 + /apk 下载），
+     *  连不上服务器或服务器未放置 APK 时不回退任何第三方源。 */
     private void checkForUpdate(final boolean manual) {
         new Thread(() -> {
-            // 1) 服务器分发渠道
-            if (!serverUrl.isEmpty()) {
-                String srvVer = null;
-                try {
-                    HttpURLConnection conn = (HttpURLConnection)
-                            new URL(serverUrl + "/apk/info").openConnection();
-                    conn.setConnectTimeout(4000);
-                    conn.setReadTimeout(6000);
-                    BufferedReader br = new BufferedReader(
-                            new InputStreamReader(conn.getInputStream(), "UTF-8"));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        sb.append(line);
-                    }
-                    br.close();
-                    srvVer = new JSONObject(sb.toString()).optString("version", "").trim();
-                } catch (Exception ignored) {
+            if (serverUrl.isEmpty()) {
+                if (manual) {
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "请先在菜单「切换服务器地址」中设置服务器", Toast.LENGTH_LONG).show());
                 }
-                if (srvVer != null && !srvVer.isEmpty()) {
-                    String cur;
-                    try {
-                        cur = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-                    } catch (Exception e) {
-                        cur = "0.0.0";
-                    }
-                    final boolean newer = isNewerVersion(srvVer, cur);
-                    final String fVer = srvVer;
-                    final String fCur = cur;
-                    final boolean fManual = manual;
-                    runOnUiThread(() -> {
-                        if (newer) {
-                            new AlertDialog.Builder(this)
-                                    .setTitle("发现新版本 " + fVer)
-                                    .setMessage("当前版本 " + fCur + "\\n将从服务器下载新 APK")
-                                    .setCancelable(true)
-                                    .setPositiveButton("下载更新", (d, w) -> {
-                                        try {
-                                            startActivity(new Intent(Intent.ACTION_VIEW,
-                                                    Uri.parse(serverUrl + "/apk")));
-                                        } catch (Exception e) {
-                                            Toast.makeText(this, "打开失败", Toast.LENGTH_SHORT).show();
-                                        }
-                                    })
-                                    .setNegativeButton("以后再说", null)
-                                    .show();
-                        } else if (fManual) {
-                            Toast.makeText(this, "已是最新版本（" + fCur + "）", Toast.LENGTH_SHORT).show();
-                        }
-                    });
-                    return; // 服务器渠道有效即止
-                }
+                return;
             }
-            // 2) 回退：GitHub Releases API
-            queryGitHubRelease(manual);
-        }).start();
-    }
-
-    /** 回退渠道：直接查询 GitHub Releases（手机网络可能无法访问 GitHub）。 */
-    private void queryGitHubRelease(final boolean manual) {
-        new Thread(() -> {
-            String latest = null, notes = null, apkUrl = null;
+            String srvVer = null;
             try {
-                HttpURLConnection conn = (HttpURLConnection) new URL(UPDATE_API).openConnection();
-                conn.setConnectTimeout(5000);
-                conn.setReadTimeout(8000);
-                conn.setRequestProperty("Accept", "application/vnd.github+json");
-                conn.setRequestProperty("User-Agent", "task-chain-app");
+                HttpURLConnection conn = (HttpURLConnection)
+                        new URL(serverUrl + "/apk/info").openConnection();
+                conn.setConnectTimeout(4000);
+                conn.setReadTimeout(6000);
                 BufferedReader br = new BufferedReader(
                         new InputStreamReader(conn.getInputStream(), "UTF-8"));
                 StringBuilder sb = new StringBuilder();
@@ -297,59 +240,45 @@ public class MainActivity extends Activity {
                     sb.append(line);
                 }
                 br.close();
-                JSONObject obj = new JSONObject(sb.toString());
-                latest = obj.optString("tag_name", "").trim();
-                notes = obj.optString("body", "");
-                org.json.JSONArray assets = obj.optJSONArray("assets");
-                if (assets != null) {
-                    for (int i = 0; i < assets.length(); i++) {
-                        JSONObject a = assets.getJSONObject(i);
-                        String name = a.optString("name", "");
-                        if (name.endsWith(".apk")) {
-                            apkUrl = a.optString("browser_download_url", "");
-                        }
-                    }
-                }
+                srvVer = new JSONObject(sb.toString()).optString("version", "").trim();
             } catch (Exception ignored) {
             }
-            final String fLatest = latest;
-            final String fNotes = notes == null ? "" : notes;
-            final String fApk = apkUrl == null || apkUrl.isEmpty() ? RELEASE_PAGE : apkUrl;
+            if (srvVer == null || srvVer.isEmpty()) {
+                if (manual) {
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "无法连接服务器或服务器未放置 APK，检查更新失败", Toast.LENGTH_LONG).show());
+                }
+                return;
+            }
+            String cur;
+            try {
+                cur = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            } catch (Exception e) {
+                cur = "0.0.0";
+            }
+            final boolean newer = isNewerVersion(srvVer, cur);
+            final String fVer = srvVer;
+            final String fCur = cur;
+            final boolean fManual = manual;
             runOnUiThread(() -> {
-                if (fLatest == null || fLatest.isEmpty()) {
-                    if (manual) {
-                        Toast.makeText(MainActivity.this,
-                                "检查更新失败（网络原因，也可稍后在浏览器打开 " + RELEASE_PAGE + "）",
-                                Toast.LENGTH_LONG).show();
-                    }
-                    return;
+                if (newer) {
+                    new AlertDialog.Builder(this)
+                            .setTitle("发现新版本 " + fVer)
+                            .setMessage("当前版本 " + fCur + "\\n将从服务器下载新 APK")
+                            .setCancelable(true)
+                            .setPositiveButton("下载更新", (d, w) -> {
+                                try {
+                                    startActivity(new Intent(Intent.ACTION_VIEW,
+                                            Uri.parse(serverUrl + "/apk")));
+                                } catch (Exception e) {
+                                    Toast.makeText(this, "打开失败", Toast.LENGTH_SHORT).show();
+                                }
+                            })
+                            .setNegativeButton("以后再说", null)
+                            .show();
+                } else if (fManual) {
+                    Toast.makeText(this, "已是最新版本（" + fCur + "）", Toast.LENGTH_SHORT).show();
                 }
-                String cur;
-                try {
-                    cur = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-                } catch (Exception e) {
-                    cur = "0.0.0";
-                }
-                if (!isNewerVersion(fLatest, cur)) {
-                    if (manual) {
-                        Toast.makeText(this, "已是最新版本（" + cur + "）", Toast.LENGTH_SHORT).show();
-                    }
-                    return;
-                }
-                String brief = fNotes.length() > 260 ? fNotes.substring(0, 260) + "…" : fNotes;
-                new AlertDialog.Builder(this)
-                        .setTitle("发现新版本 " + fLatest)
-                        .setMessage("当前版本 " + cur + "\\n\\n" + brief)
-                        .setCancelable(true)
-                        .setPositiveButton("前往下载", (d, w) -> {
-                            try {
-                                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(fApk)));
-                            } catch (Exception e) {
-                                Toast.makeText(this, "打开失败，请手动访问 " + RELEASE_PAGE, Toast.LENGTH_LONG).show();
-                            }
-                        })
-                        .setNegativeButton("以后再说", null)
-                        .show();
             });
         }).start();
     }

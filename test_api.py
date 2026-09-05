@@ -45,7 +45,7 @@ def main():
     import socket as _s
     u = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
     u.settimeout(3.0)
-    u.sendto(b"TASKCHAIN_DISCOVER", ("127.0.0.1", 9875))
+    u.sendto(b"TASKCHAIN_DISCOVER", ("127.0.0.1", 9876))
     try:
         data, _ = u.recvfrom(256)
         check("UDP 发现应答指向测试端口", data.startswith(b"TASKCHAIN_SERVER|http://127.0.0.1:8001"), data.decode("utf-8", "replace"))
@@ -108,6 +108,43 @@ def main():
     r = admin.post(f"{BASE}/api/admin/entrysync/push")
     check("入口推送返回结构(ok/message)", r.ok and "ok" in r.json() and "message" in r.json(), r.text)
     admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": ""})
+
+    # 自托管入口服务器（entry_server.py）端到端：保存推送目标 → 推送 → 拉取验证
+    admin.put(f"{BASE}/api/admin/entrysync",
+              json={"push_url": "http://127.0.0.1:9399/update", "push_token": "testtoken"})
+    r = admin.get(f"{BASE}/api/admin/entrysync")
+    check("自托管推送配置读取且脱敏", r.ok and r.json()["push_token"] == "test****"
+          and r.json()["push_url"] == "http://127.0.0.1:9399/update", r.text)
+    admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": "http://100.64.0.9:8000"})
+    ep = admin.post(f"{BASE}/api/admin/appconfig").json() if False else None
+    r = admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": "http://100.64.0.9:8000"})
+    check("保存地址自动推送入口", r.ok and r.json().get("entry_push", {}).get("ok") is True, r.text)
+    r = requests.get("http://127.0.0.1:9399/config.json")
+    check("入口服务器返回新地址", r.ok and r.json()["app_server_url"] == "http://100.64.0.9:8000", r.text)
+    r = requests.post("http://127.0.0.1:9399/update", json={"app_server_url": "http://evil:1"},
+                      headers={"X-Token": "wrong"})
+    check("入口服务器拒绝错误密钥", r.status_code == 403, f"got {r.status_code}")
+    admin.put(f"{BASE}/api/admin/appconfig", json={"app_server_url": ""})
+
+    # 救援邮箱
+    r = tu.get(f"{BASE}/api/appconfig").json()
+    check("未配置救援邮箱时不下发凭据", "rescue" not in r, str(r))
+    r = tu.put(f"{BASE}/api/admin/rescuemail", json={"sender": "a@qq.com"})
+    check("非管理员不能改救援邮箱", r.status_code == 403, f"got {r.status_code}")
+    r = admin.put(f"{BASE}/api/admin/rescuemail", json={"sender": "not-a-mail"})
+    check("救援邮箱格式校验", r.status_code == 400, r.text)
+    r = admin.put(f"{BASE}/api/admin/rescuemail",
+                  json={"sender": "rescue@qq.com", "code": "authcode123", "to": "rescue@qq.com"})
+    check("保存救援邮箱配置", r.ok, r.text)
+    r = admin.get(f"{BASE}/api/admin/rescuemail")
+    check("救援邮箱读取且授权码脱敏", r.ok and r.json()["code"] == "auth****"
+          and r.json()["pop_host"] == "pop.qq.com", r.text)
+    r = ls.get(f"{BASE}/api/appconfig").json()
+    check("登录用户 appconfig 下发救援凭据", r.get("rescue", {}).get("user") == "rescue@qq.com"
+          and r.get("rescue", {}).get("token") == "authcode123", str(r))
+    r = requests.get(f"{BASE}/api/appconfig").json()
+    check("未登录 appconfig 不下发凭据", "rescue" not in r, str(r))
+    admin.put(f"{BASE}/api/admin/rescuemail", json={"code": ""})  # code 留空保持，不断言发信
 
     # ---- 开放注册 ----
     s = requests.Session()

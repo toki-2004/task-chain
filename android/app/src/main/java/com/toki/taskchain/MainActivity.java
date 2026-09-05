@@ -44,6 +44,9 @@ public class MainActivity extends Activity {
     private static final String PREFS = "taskchain";
     private static final String KEY_SERVER = "server_url";
     private static final String KEY_ENTRY = "entry_url";
+    private static final String KEY_RESCUE_USER = "rescue_user";
+    private static final String KEY_RESCUE_TOKEN = "rescue_token";
+    private static final String KEY_RESCUE_POP = "rescue_pop_host";
 
     /**
      * 内置默认入口（编译前可改）：全网可达的固定网址（如花生壳隧道域名、Gitee raw 配置文件）。
@@ -104,11 +107,8 @@ public class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest request,
                                         WebResourceError error) {
                 if (request.isForMainFrame()) {
-                    // 主页加载失败：先在局域网自动发现，再试固定入口
+                    // 主页加载失败：局域网发现 → 内置入口 → 固定入口 → 救援邮箱
                     discoverOnLan(false);
-                    if (!entryUrl().isEmpty()) {
-                        resolveViaEntry(false);
-                    }
                 }
             }
         });
@@ -200,18 +200,18 @@ public class MainActivity extends Activity {
                             .putString(KEY_SERVER, result).apply();
                     Toast.makeText(MainActivity.this, "已连接到服务器：" + result, Toast.LENGTH_SHORT).show();
                     webView.loadUrl(result);
+                    return;
+                }
+                // 发现失败：内置默认入口 → 固定入口 → 救援邮箱 → 手动
+                if (!DEFAULT_ENTRY.isEmpty() && !DEFAULT_ENTRY.equals(serverUrl)) {
+                    serverUrl = DEFAULT_ENTRY;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_SERVER, DEFAULT_ENTRY).apply();
+                    webView.loadUrl(DEFAULT_ENTRY);
+                } else if (!entryUrl().isEmpty() && !entryUrl().equals(serverUrl)) {
+                    resolveViaEntry(false);
                 } else {
-                    // 发现失败：内置默认入口 → 固定入口 → 手动输入
-                    if (serverUrl.isEmpty() && !DEFAULT_ENTRY.isEmpty()) {
-                        serverUrl = DEFAULT_ENTRY;
-                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                                .putString(KEY_SERVER, DEFAULT_ENTRY).apply();
-                        webView.loadUrl(DEFAULT_ENTRY);
-                    } else if (serverUrl.isEmpty() && !entryUrl().isEmpty()) {
-                        resolveViaEntry(onFailAsk);
-                    } else if (onFailAsk && serverUrl.isEmpty()) {
-                        askServerDialog();
-                    }
+                    rescueMailFetch(onFailAsk);
                 }
             });
         }).start();
@@ -317,6 +317,16 @@ public class MainActivity extends Activity {
                 }
                 br.close();
                 JSONObject obj = new JSONObject(sb.toString());
+                // 缓存服务器下发的救援邮箱凭据（仅已登录会话能拿到）
+                String ru = obj.optString("rescue_user", "").trim();
+                String rt = obj.optString("rescue_token", "").trim();
+                if (!ru.isEmpty() && !rt.isEmpty()) {
+                    SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+                    sp.edit().putString(KEY_RESCUE_USER, ru)
+                            .putString(KEY_RESCUE_TOKEN, rt)
+                            .putString(KEY_RESCUE_POP, obj.optString("rescue_pop_host", "pop.qq.com"))
+                            .apply();
+                }
                 final String official = obj.optString("app_server_url", "").trim();
                 if (official.isEmpty() || official.equals(current)) {
                     return;
@@ -335,6 +345,123 @@ public class MainActivity extends Activity {
                 // 拉取失败保持现地址，不影响使用
             }
         }).start();
+    }
+
+    /** 失联自救最后一环：登录救援邮箱（POP3）读最新邮件里的服务器地址。静默失败。 */
+    private void rescueMailFetch(final boolean onFailAsk) {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        final String ru = p.getString(KEY_RESCUE_USER, "");
+        final String rt = p.getString(KEY_RESCUE_TOKEN, "");
+        final String rh = p.getString(KEY_RESCUE_POP, "pop.qq.com");
+        if (ru.isEmpty() || rt.isEmpty()) {
+            if (onFailAsk && serverUrl.isEmpty()) {
+                runOnUiThread(this::askServerDialog);
+            }
+            return;
+        }
+        runOnUiThread(() -> Toast.makeText(this, "正在通过救援邮箱获取地址…", Toast.LENGTH_SHORT).show());
+        new Thread(() -> {
+            final String url = pop3LatestUrl(ru, rt, rh);
+            runOnUiThread(() -> {
+                if (url != null && !url.isEmpty() && !url.equals(serverUrl)
+                        && url.startsWith("http")) {
+                    serverUrl = url;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_SERVER, url).apply();
+                    Toast.makeText(MainActivity.this, "已通过救援邮箱恢复连接", Toast.LENGTH_SHORT).show();
+                    webView.loadUrl(url);
+                } else if (onFailAsk && serverUrl.isEmpty()) {
+                    askServerDialog();
+                }
+            });
+        }).start();
+    }
+
+    /** 手写 POP3 客户端（零依赖）：登录救援邮箱，读最新一封邮件正文中的第一个 URL。 */
+    private static String pop3LatestUrl(String user, String token, String popHost) {
+        String host = popHost == null || popHost.isEmpty() ? "pop.qq.com" : popHost;
+        int port = 995;
+        if (popHost != null && popHost.contains(":")) {
+            host = popHost.substring(0, popHost.indexOf(':'));
+            port = Integer.parseInt(popHost.substring(popHost.indexOf(':') + 1));
+        }
+        javax.net.ssl.SSLSocket sock = null;
+        try {
+            sock = (javax.net.ssl.SSLSocket) javax.net.ssl.SSLSocketFactory
+                    .getDefault().createSocket(host, port);
+            sock.setSoTimeout(15000);
+            BufferedReader r = new BufferedReader(
+                    new InputStreamReader(sock.getInputStream(), "UTF-8"));
+            java.io.PrintWriter w = new java.io.PrintWriter(
+                    new java.io.OutputStreamWriter(sock.getOutputStream(), "UTF-8"), true);
+            if (!r.readLine().startsWith("+OK")) {
+                return null;
+            }
+            w.println("A1 USER " + user);
+            if (!popWaitOk(r, "A1")) {
+                return null;
+            }
+            w.println("A2 PASS " + token);
+            if (!popWaitOk(r, "A2")) {
+                return null;
+            }
+            w.println("A3 STAT");
+            String stat = popWaitLine(r, "A3");
+            if (stat == null || !stat.startsWith("+OK")) {
+                return null;
+            }
+            int count = Integer.parseInt(stat.split("\\s+")[1]);
+            if (count == 0) {
+                w.println("A4 QUIT");
+                return null;
+            }
+            w.println("A4 RETR " + count);
+            if (!popWaitOk(r, "A4")) {
+                return null;
+            }
+            StringBuilder body = new StringBuilder();
+            String line;
+            boolean inBody = false;
+            while ((line = r.readLine()) != null) {
+                if (line.equals(".")) {
+                    break;
+                }
+                if (line.isEmpty()) {
+                    inBody = true;
+                }
+                if (inBody) {
+                    body.append(line).append('\n');
+                }
+            }
+            w.println("A5 QUIT");
+            sock.close();
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("https?://[^\\s<>\"']+").matcher(body);
+            return m.find() ? m.group() : null;
+        } catch (Exception e) {
+            try {
+                if (sock != null) {
+                    sock.close();
+                }
+            } catch (Exception ignored) {
+            }
+            return null;
+        }
+    }
+
+    private static boolean popWaitOk(BufferedReader r, String tag) throws Exception {
+        String s = popWaitLine(r, tag);
+        return s != null && s.startsWith("+OK");
+    }
+
+    private static String popWaitLine(BufferedReader r, String tag) throws Exception {
+        String s;
+        while ((s = r.readLine()) != null) {
+            if (s.startsWith(tag)) {
+                return s;
+            }
+        }
+        return null;
     }
 
     private void askServerDialog() {

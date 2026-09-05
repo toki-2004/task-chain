@@ -1195,11 +1195,58 @@ def _lan_ip():
 
 
 @app.get("/api/appconfig")
-def public_appconfig():
-    """公开接口：APK 启动/联网时拉取官方访问地址（仅此一个非敏感字段）。"""
+def public_appconfig(request: Request):
+    """公开接口：APK 启动/联网时拉取官方访问地址。
+
+    已登录用户额外返回救援邮箱凭据（仅地址自救用途，供 APK 缓存后失联时 POP3 读取）。
+    """
+    user = current_user(request)
     with db_ctx() as db:
         url = _get_config(db, "app_server_url")
-    return {"app_server_url": url}
+        out = {"app_server_url": url}
+        if user:
+            sender = _get_config(db, "rescue_mail_from")
+            code = _get_config(db, "rescue_mail_code")
+            if sender and code:
+                out["rescue"] = {"user": sender, "token": code, "pop_host": POP_HOST}
+    return out
+
+
+class RescueMailBody(BaseModel):
+    sender: str = ""    # 发件邮箱账号（即 POP3 用户名）
+    code: str = ""      # SMTP/POP3 授权码，留空保持原值
+    to: str = ""        # 收件邮箱（可与发件相同）
+
+
+@app.get("/api/admin/rescuemail")
+def admin_get_rescuemail(request: Request):
+    require_admin(request)
+    with db_ctx() as db:
+        sender = _get_config(db, "rescue_mail_from")
+        code = _get_config(db, "rescue_mail_code")
+        to = _get_config(db, "rescue_mail_to")
+    return {"sender": sender, "to": to,
+            "code": (code[:4] + "****") if code else "",
+            "pop_host": POP_HOST, "smtp_host": SMTP_HOST}
+
+
+@app.put("/api/admin/rescuemail")
+def admin_set_rescuemail(body: RescueMailBody, request: Request):
+    require_admin(request)
+    sender = body.sender.strip()
+    to = body.to.strip()
+    if sender and "@" not in sender:
+        raise HTTPException(400, "发件邮箱格式不正确")
+    if to and "@" not in to:
+        raise HTTPException(400, "收件邮箱格式不正确")
+    with db_ctx() as db:
+        if sender:
+            _set_config(db, "rescue_mail_from", sender)
+        if to:
+            _set_config(db, "rescue_mail_to", to)
+        if body.code.strip():
+            _set_config(db, "rescue_mail_code", body.code.strip())
+    return {"ok": True}
 
 
 @app.get("/api/admin/appconfig")
@@ -1225,20 +1272,90 @@ def admin_set_appconfig(body: AppConfigBody, request: Request):
         while url.endswith("/"):
             url = url[:-1]
     push_result = None
+    rescue_result = None
     with db_ctx() as db:
         _set_config(db, "app_server_url", url)
-        entry_owner = _get_config(db, "entry_owner")
-        if url and entry_owner:
-            push_result = _gitee_push_config(db, url)
+        if url:
+            push_result = _push_entry(db, url)
+            rescue_result = _send_rescue_mail(url)
     resp = {"ok": True, "app_server_url": url}
     if push_result is not None:
         resp["entry_push"] = push_result
+    if rescue_result is not None:
+        resp["rescue_mail"] = rescue_result
     return resp
 
 
-# ---- 固定入口（Gitee raw 配置文件）：APK 的 bootstrap 指针 ----
+# ---- 固定入口：把官方地址推送到入口（自托管入口服务器优先，其次 Gitee）----
 
 ENTRY_KEYS = ("entry_owner", "entry_repo", "entry_path", "entry_branch", "entry_token")
+CUSTOM_KEYS = ("entry_push_url", "entry_push_token")
+RESCUE_KEYS = ("rescue_mail_from", "rescue_mail_code", "rescue_mail_to")
+SMTP_HOST = "smtp.qq.com"   # 如用 163 邮箱改为 smtp.163.com
+POP_HOST = "pop.qq.com"     # 如用 163 邮箱改为 pop.163.com
+
+
+def _send_rescue_mail(server_url):
+    """官方地址变更时发一封救援邮件到固定邮箱（供 APK POP3 自救读取）。"""
+    import smtplib
+    from email.mime.text import MIMEText
+    with db_ctx() as db:
+        sender = _get_config(db, "rescue_mail_from")
+        code = _get_config(db, "rescue_mail_code")
+        to = _get_config(db, "rescue_mail_to")
+    if not (sender and code and to):
+        return {"ok": False, "message": "救援邮箱未配置"}
+    try:
+        msg = MIMEText(f"任务链服务器地址已更新：{server_url}\n"
+                       f"时间：{__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                       f"（本邮件由系统自动发送，APK 将读取本邮件自动恢复连接）", "plain", "utf-8")
+        msg["Subject"] = "任务链地址更新"
+        msg["From"] = sender
+        msg["To"] = to
+        smtp = smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=10)
+        smtp.login(sender, code)
+        smtp.sendmail(sender, [to], msg.as_string())
+        smtp.quit()
+        return {"ok": True, "message": f"救援邮件已发送至 {to}"}
+    except Exception as e:
+        return {"ok": False, "message": f"救援邮件发送失败：{e}"}
+
+
+def _push_entry(db, server_url):
+    """向已配置的入口渠道推送；返回 {ok, message}（可能聚合多渠道结果）。"""
+    results = []
+    c_url = _get_config(db, "entry_push_url")
+    c_token = _get_config(db, "entry_push_token")
+    if c_url and c_token:
+        results.append(_custom_push(c_url, c_token, server_url))
+    owner = _get_config(db, "entry_owner")
+    if owner and _get_config(db, "entry_repo") and _get_config(db, "entry_path") and _get_config(db, "entry_token"):
+        results.append(_gitee_push_config(db, server_url))
+    if not results:
+        return None
+    ok = any(r["ok"] for r in results)
+    return {"ok": ok, "message": "；".join(r["message"] for r in results)}
+
+
+def _custom_push(push_url, token, server_url):
+    """推送到自托管入口服务器（tunnel/entry_server.py）。"""
+    import json as _json
+    import urllib.error
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            push_url, method="POST",
+            data=_json.dumps({"app_server_url": server_url}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Token": token})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = _json.loads(r.read().decode("utf-8"))
+        return {"ok": bool(resp.get("ok")), "message": f"入口服务器：{resp.get('message', '已更新')}" if resp.get("message") else "已推送到入口服务器"}
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return {"ok": False, "message": "入口服务器：推送密钥不正确"}
+        return {"ok": False, "message": f"入口服务器：HTTP {e.code}"}
+    except Exception as e:
+        return {"ok": False, "message": f"入口服务器连接失败：{e}"}
 
 
 def _gitee_push_config(db, server_url):
@@ -1285,6 +1402,8 @@ class EntrySyncBody(BaseModel):
     path: str = ""
     branch: str = "master"
     token: str = ""  # 留空 = 保持原 token
+    push_url: str = ""
+    push_token: str = ""  # 留空 = 保持原 token
 
 
 @app.get("/api/admin/entrysync")
@@ -1292,16 +1411,22 @@ def admin_get_entrysync(request: Request):
     require_admin(request)
     with db_ctx() as db:
         cfg = {k: _get_config(db, k) for k in ENTRY_KEYS}
+        custom_url = _get_config(db, "entry_push_url")
+        custom_token = _get_config(db, "entry_push_token")
         app_url = _get_config(db, "app_server_url")
     token = cfg["entry_token"]
     configured = bool(cfg["entry_owner"] and cfg["entry_repo"] and cfg["entry_path"] and token)
     raw_url = (f"https://gitee.com/{cfg['entry_owner']}/{cfg['entry_repo']}"
                f"/raw/{cfg['entry_branch'] or 'master'}/{cfg['entry_path']}") if configured else ""
+    custom_ready = bool(custom_url and custom_token)
     return {
         "entry_owner": cfg["entry_owner"], "entry_repo": cfg["entry_repo"],
         "entry_path": cfg["entry_path"], "entry_branch": cfg["entry_branch"],
         "token": (token[:4] + "****") if token else "",
         "configured": configured, "raw_url": raw_url,
+        "push_url": custom_url,
+        "push_token": (custom_token[:4] + "****") if custom_token else "",
+        "custom_configured": custom_ready,
         "app_server_url": app_url,
     }
 
@@ -1312,11 +1437,26 @@ def admin_set_entrysync(body: EntrySyncBody, request: Request):
     with db_ctx() as db:
         if body.token.strip():
             _set_config(db, "entry_token", body.token.strip())
+        if body.push_token.strip():
+            _set_config(db, "entry_push_token", body.push_token.strip())
         _set_config(db, "entry_owner", body.owner.strip())
         _set_config(db, "entry_repo", body.repo.strip())
         _set_config(db, "entry_path", body.path.strip())
         _set_config(db, "entry_branch", body.branch.strip() or "master")
+        if body.push_url.strip():
+            u = body.push_url.strip()
+            if not u.startswith(("http://", "https://")):
+                raise HTTPException(400, "推送地址必须以 http:// 或 https:// 开头")
+            _set_config(db, "entry_push_url", u)
     return {"ok": True}
+
+
+@app.post("/api/admin/rescuemail/test")
+def admin_rescuemail_test(request: Request):
+    require_admin(request)
+    with db_ctx() as db:
+        url = _get_config(db, "app_server_url")
+    return _send_rescue_mail(url or "http://测试地址:8000")
 
 
 @app.post("/api/admin/entrysync/push")
@@ -1447,15 +1587,16 @@ DISCOVERY_PORT = 9875
 def _start_discovery_responder():
     """UDP 应答线程：APK 在局域网广播问询，本线程回应服务器地址（端口 9875/UDP）。"""
     http_port = os.environ.get("TASKCHAIN_PORT", "8000")
+    disc_port = int(os.environ.get("TASKCHAIN_DISCOVERY_PORT", str(DISCOVERY_PORT)))
 
     def responder():
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("0.0.0.0", DISCOVERY_PORT))
+            sock.bind(("0.0.0.0", disc_port))
             sock.settimeout(1.0)
         except Exception as e:
-            print(f"[discovery] UDP {DISCOVERY_PORT} bind failed: {e}")
+            print(f"[discovery] UDP {disc_port} bind failed: {e}")
             return
         while True:
             try:

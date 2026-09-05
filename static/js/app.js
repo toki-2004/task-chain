@@ -1102,8 +1102,64 @@ async function renderAdmin(app) {
       /* 固定入口（Gitee raw 指针） */
       const es = await GET("/api/admin/entrysync");
       const card = body.querySelector(".card");
+      /* 救援邮箱（frp 地址变更自动发信，APK 失联时 POP3 自救） */
+      const rm = await GET("/api/admin/rescuemail");
       card.insertAdjacentHTML("afterend", `<div class="card">
-        <div class="section-title" style="margin:0 0 6px">固定入口（Gitee 配置文件，供 APK 失联自救）</div>
+        <div class="section-title" style="margin:0 0 6px">救援邮箱（frp 地址变更自动发信）</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+          用一个<b>专用 QQ 邮箱</b>：设置→账户→开启 IMAP/SMTP 服务→生成<b>授权码</b>。
+          配置后每次保存官方地址会自动发一封邮件到该邮箱；成员的 APK 首次连上服务器时自动缓存凭据，
+          之后即使 frp 地址彻底失联，App 也会登录邮箱读取最新地址自救。发件=收件填同一个邮箱即可。</div>
+        <div class="form-item"><input id="rm-sender" placeholder="邮箱账号，如 xxx@qq.com" value="${esc(rm.sender)}"></div>
+        <div class="form-item"><input id="rm-code" placeholder="${rm.code ? "授权码（已保存 " + esc(rm.code) + "，留空保持不变）" : "SMTP/POP3 授权码"}"></div>
+        <div class="form-item"><input id="rm-to" placeholder="收件邮箱（可与发件相同）" value="${esc(rm.to)}"></div>
+        <div style="font-size:12px;color:var(--muted)">POP3：${esc(rm.pop_host)} · SMTP：${esc(rm.smtp_host)}</div>
+        <div class="btn-row"><button class="btn small" id="rm-save">保存救援邮箱</button>
+          <button class="btn plain small" id="rm-test">发送测试邮件</button></div>
+      </div>`);
+      body.querySelector("#rm-save").onclick = async () => {
+        try {
+          await api("PUT", "/api/admin/rescuemail", {
+            sender: body.querySelector("#rm-sender").value.trim(),
+            code: body.querySelector("#rm-code").value.trim(),
+            to: body.querySelector("#rm-to").value.trim(),
+          });
+          toast("救援邮箱已保存"); load();
+        } catch (e) { toast(e.message, true); }
+      };
+      body.querySelector("#rm-test").onclick = async () => {
+        try {
+          await api("PUT", "/api/admin/rescuemail", {
+            sender: body.querySelector("#rm-sender").value.trim(),
+            code: body.querySelector("#rm-code").value.trim(),
+            to: body.querySelector("#rm-to").value.trim(),
+          });
+          const r = await POST("/api/admin/rescuemail/test");
+          toast(r.message, !r.ok);
+        } catch (e) { toast(e.message, true); }
+      };
+      card.insertAdjacentHTML("afterend", `<div class="card">
+        <div class="section-title" style="margin:0 0 6px">自托管入口服务器（frp 方案首选）</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+          在跑 frps 的 VPS 上运行项目自带的 <b>tunnel/entry_server.py</b>（纯标准库，秒级部署），
+          APK 固定入口填 <b>http://VPS_IP:9300/config.json</b>。此后 frp 地址随便换，
+          这里保存地址时自动推送过去；推送密钥用 entry_server 首次启动打印的 token。</div>
+        <div class="form-item"><input id="es-pushurl" placeholder="http://VPS_IP:9300/update" value="${esc(es.push_url)}"></div>
+        <div class="form-item"><input id="es-pushtoken" placeholder="${es.push_token ? "推送密钥（已保存 " + esc(es.push_token) + "，留空保持不变）" : "推送密钥（entry_server 启动时打印）"}"></div>
+        ${es.custom_configured ? `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">✅ 已配置自托管入口</div>` : ""}
+        <div class="btn-row"><button class="btn plain small" id="es-save2">保存推送目标</button></div>
+      </div>`);
+      body.querySelector("#es-save2").onclick = async () => {
+        try {
+          await api("PUT", "/api/admin/entrysync", {
+            push_url: body.querySelector("#es-pushurl").value.trim(),
+            push_token: body.querySelector("#es-pushtoken").value.trim(),
+          });
+          toast("推送目标已保存"); load();
+        } catch (e) { toast(e.message, true); }
+      };
+      card.insertAdjacentHTML("afterend", `<div class="card">
+        <div class="section-title" style="margin:0 0 6px">Gitee 入口（备选）</div>
         <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
           把官方地址写进 Gitee 仓库的一个 JSON 文件，APK 里配好同一文件地址后，即使保存的地址彻底失联，
           也能在下次启动时自动拿到新地址自救。需要：Gitee 账号 → 新建一个<b>公开</b>仓库 →

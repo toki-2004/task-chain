@@ -4,7 +4,8 @@ import os
 import sqlite3
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "data.db")
+# 测试可用 TASKCHAIN_DB 指向临时库，避免触碰生产数据
+DB_PATH = os.environ.get("TASKCHAIN_DB") or os.path.join(BASE_DIR, "data.db")
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 

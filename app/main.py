@@ -3,7 +3,7 @@
 
 业务规则（与 README《业务规则》一致）：
 - 任务链(chain)由多个节点(node)组成；节点 N 审核通过后，其受任人可创建节点 N+1 并指定受任人。
-- 节点提交的审核权 = 该节点的创建者；终结申请的审核权 = 链发起人；链发起人自己终结无需审核。
+- 节点提交的审核权 = 该节点的创建者；结束申请的审核权 = 链发起人；链发起人自己结束无需审核。
 - 前置要求分两类：前置任务（须为其他链的节点，且该节点审核通过后才解锁提交）、前置设备
   （受任人须先在 App 内"领用"设备，提交时设备必须处于"由本任务领用中"状态）。
 - 设备占用/释放全部手动：领用、归还；管理员可在后台强制释放。
@@ -302,6 +302,28 @@ def admin_toggle_user(uid: int, body: ActiveBody, request: Request):
     return {"ok": True}
 
 
+@app.delete("/api/admin/users/{uid}")
+def admin_del_user(uid: int, request: Request):
+    """删除用户：参与过任务（发起/创建/受任过节点）的不可删，只能停用，保证全流程留痕完整。"""
+    admin = require_admin(request)
+    if uid == admin["id"]:
+        raise HTTPException(400, "不能删除自己的账号")
+    with db_ctx() as db:
+        u = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if not u:
+            raise HTTPException(404, "用户不存在")
+        involved = db.execute(
+            "SELECT COUNT(*) c FROM nodes WHERE assignee_id=? OR creator_id=?", (uid, uid)
+        ).fetchone()["c"] + db.execute(
+            "SELECT COUNT(*) c FROM chains WHERE creator_id=?", (uid,)
+        ).fetchone()["c"]
+        if involved:
+            raise HTTPException(400, "该用户已参与任务，为保证流程记录完整只能停用，不能删除")
+        db.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
+        db.execute("DELETE FROM users WHERE id=?", (uid,))
+    return {"ok": True}
+
+
 class DeviceBody(BaseModel):
     name: str
     code: str = ""
@@ -327,8 +349,14 @@ def admin_add_device(body: DeviceBody, request: Request):
 
 @app.delete("/api/admin/devices/{did}")
 def admin_del_device(did: int, request: Request):
+    """删除设备：占用中或已被任务用作前置要求的不可删，保证流程记录完整。"""
     require_admin(request)
     with db_ctx() as db:
+        dev = db.execute("SELECT * FROM devices WHERE id=?", (did,)).fetchone()
+        if not dev:
+            raise HTTPException(404, "设备不存在")
+        if device_status(db, did):
+            raise HTTPException(400, "设备当前被占用，请先归还或强制释放再删除")
         used = db.execute(
             "SELECT COUNT(*) c FROM prereqs WHERE type='device' AND device_id=?", (did,)
         ).fetchone()["c"]
@@ -1044,12 +1072,12 @@ def terminate_chain(chain_id: int, body: TerminateBody, request: Request):
         if chain["status"] != "active":
             raise HTTPException(400, "任务链已结束")
         if db.execute("SELECT 1 FROM terminations WHERE chain_id=? AND status='pending'", (chain_id,)).fetchone():
-            raise HTTPException(400, "已有待审核的终结申请")
+            raise HTTPException(400, "已有待审核的结束申请")
         is_chain_creator = chain["creator_id"] == user["id"]
         is_assignee = bool(db.execute("SELECT 1 FROM nodes WHERE chain_id=? AND assignee_id=?",
                                       (chain_id, user["id"])).fetchone())
         if not (is_chain_creator or is_assignee):
-            raise HTTPException(403, "只有链发起人或任务受任人可以终结任务")
+            raise HTTPException(403, "只有链发起人或任务受任人可以结束任务")
         if is_chain_creator:
             db.execute("UPDATE chains SET status='terminated', terminated_at=datetime('now','localtime'), "
                        "terminate_reason=? WHERE id=?", (body.reason or "", chain_id))
@@ -1074,11 +1102,11 @@ def terminate_review(chain_id: int, body: TermReviewBody, request: Request):
         if not chain:
             raise HTTPException(404, "任务不存在")
         if chain["creator_id"] != user["id"]:
-            raise HTTPException(403, "只有链发起人可以审核终结申请")
+            raise HTTPException(403, "只有链发起人可以审核结束申请")
         term = db.execute("SELECT * FROM terminations WHERE chain_id=? AND status='pending' "
                           "ORDER BY id DESC LIMIT 1", (chain_id,)).fetchone()
         if not term:
-            raise HTTPException(400, "没有待审核的终结申请")
+            raise HTTPException(400, "没有待审核的结束申请")
         if body.approve:
             db.execute("UPDATE terminations SET status='approved', decided_at=datetime('now','localtime'), "
                        "decided_by=? WHERE id=?", (user["id"], term["id"]))

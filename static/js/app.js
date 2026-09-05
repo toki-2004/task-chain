@@ -150,7 +150,7 @@ function taskCard(t, opts = {}) {
   const sub = t.creator_id === (ME && ME.user.id) && opts.showSubmitter
     ? `<span>受任人：${esc(t.assignee_name)}</span>` : "";
   const chainTag = t.seq > 1 || opts.alwaysChain ? `<span class="chip dark">节点 ${t.seq}</span>` : "";
-  const terminated = t.chain_status === "terminated" ? '<span class="chip grey">链已终结</span>' : "";
+  const terminated = t.chain_status === "terminated" ? '<span class="chip grey">链已结束</span>' : "";
   return `<div class="card task-card" data-node="${t.id}">
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       ${chainTag}${statusChip(t.status, t.status === "approved" && !opts.keepStatus ? undefined : undefined)}
@@ -277,14 +277,14 @@ async function renderHome(app) {
       drawSeg(seg._counts);
       let html = "";
       if (homeTab === "pending" && data.terminations.length) {
-        html += `<div class="section-title">终结申请（待我审核）</div>` + data.terminations.map((t) => `
+        html += `<div class="section-title">结束申请（待我审核）</div>` + data.terminations.map((t) => `
           <div class="card">
-            <div style="display:flex;gap:6px;align-items:center"><span class="chip red">终结申请</span><span class="chip">${esc(t.chain_title)}</span></div>
+            <div style="display:flex;gap:6px;align-items:center"><span class="chip red">结束申请</span><span class="chip">${esc(t.chain_title)}</span></div>
             <div class="card-title" style="margin-top:6px">${esc(t.chain_title)}</div>
             <div class="meta"><span>申请人：${esc(t.applicant_name)}</span><span>${fmtDT(t.created_at)}</span></div>
             ${t.reason ? `<div style="font-size:13px;color:var(--muted);margin-top:4px">理由：${esc(t.reason)}</div>` : ""}
             <div class="btn-row">
-              <button class="btn green small" data-term="${t.chain_id}" data-approve="1">同意终结</button>
+              <button class="btn green small" data-term="${t.chain_id}" data-approve="1">同意结束</button>
               <button class="btn plain small" data-term="${t.chain_id}" data-approve="0">拒绝</button>
             </div>
           </div>`).join("");
@@ -316,15 +316,15 @@ async function decideTerminate(chainId, approve, after) {
   const doIt = async (comment) => {
     try {
       await POST(`/api/chains/${chainId}/terminate/review`, { approve, comment: comment || "" });
-      toast(approve ? "已同意终结，任务链结束" : "已拒绝终结申请");
+      toast(approve ? "已同意结束，任务链结束" : "已拒绝结束申请");
       await refreshMe(); after && after();
     } catch (e) { toast(e.message, true); }
   };
   if (approve) {
-    confirmModal("同意终结", "终结后整个任务链将立即结束，且不可恢复。确定同意终结？", "同意终结", "danger", () => doIt(""));
+    confirmModal("同意结束", "结束后整个任务链将立即结束，且不可恢复。确定同意结束？", "同意结束", "danger", () => doIt(""));
   } else {
     modal({
-      title: "拒绝终结申请", okText: "拒绝", okClass: "danger",
+      title: "拒绝结束申请", okText: "拒绝", okClass: "danger",
       body: `<div class="form-item"><textarea id="term-comment" placeholder="拒绝原因（选填）"></textarea></div>`,
       onOk: async (mask, close) => { await doIt(mask.querySelector("#term-comment").value); close(); },
     });
@@ -487,8 +487,8 @@ const EVENT_LABEL = {
   chain_create: "创建任务", node_create: "创建节点", submit: "提交完成",
   review_approve: "审核通过", review_reject: "审核驳回", feedback: "反馈",
   appeal: "申诉", reply: "回复", appeal_resolve: "申诉处理",
-  terminate_apply: "申请终结", terminate_approve: "同意终结", terminate_reject: "拒绝终结",
-  terminate_direct: "终结任务", device_checkout: "领用设备", device_return: "归还设备", device_release: "强制释放设备",
+  terminate_apply: "申请结束", terminate_approve: "同意结束", terminate_reject: "拒绝结束",
+  terminate_direct: "结束任务", device_checkout: "领用设备", device_return: "归还设备", device_release: "强制释放设备",
 };
 
 async function renderNode(app, nodeId) {
@@ -507,7 +507,7 @@ async function renderNode(app, nodeId) {
   let html = `<div class="card">
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <span class="chip dark">节点 ${node.seq}</span>${statusChip(node.status)}
-      ${chain.status === "terminated" ? '<span class="chip grey">链已终结</span>' : ""}
+      ${chain.status === "terminated" ? '<span class="chip grey">链已结束</span>' : ""}
     </div>
     <div class="card-title" style="font-size:17px;margin-top:6px">${esc(node.title)}</div>
     <div class="meta">
@@ -518,15 +518,15 @@ async function renderNode(app, nodeId) {
     ${fileGrid(attachments)}
   </div>`;
 
-  /* ---- 终结状态横幅 ---- */
+  /* ---- 结束状态横幅 ---- */
   if (termination && perms.can_decide_terminate) {
-    html += `<div class="banner red"><b>终结申请</b>：${esc(termination.applicant_name)} 申请终结本任务链${termination.reason ? "，理由：" + esc(termination.reason) : ""}
-      <div class="btn-row"><button class="btn green small" id="term-ok">同意终结</button><button class="btn plain small" id="term-no">拒绝</button></div></div>`;
+    html += `<div class="banner red"><b>结束申请</b>：${esc(termination.applicant_name)} 申请结束本任务链${termination.reason ? "，理由：" + esc(termination.reason) : ""}
+      <div class="btn-row"><button class="btn green small" id="term-ok">同意结束</button><button class="btn plain small" id="term-no">拒绝</button></div></div>`;
   } else if (termination) {
-    html += `<div class="banner">⏳ ${esc(termination.applicant_name)} 已发起终结申请，待链发起人审核</div>`;
+    html += `<div class="banner">⏳ ${esc(termination.applicant_name)} 已发起结束申请，待链发起人审核</div>`;
   }
   if (chain.status === "terminated") {
-    html += `<div class="banner">🚫 任务链已于 ${esc(chain.terminated_at)} 终结${chain.terminate_reason ? "，原因：" + esc(chain.terminate_reason) : ""}</div>`;
+    html += `<div class="banner">🚫 任务链已于 ${esc(chain.terminated_at)} 结束${chain.terminate_reason ? "，原因：" + esc(chain.terminate_reason) : ""}</div>`;
   }
   if (node.status === "rejected") {
     const lastReject = [...events].reverse().find((e) => e.type === "review_reject");
@@ -560,7 +560,7 @@ async function renderNode(app, nodeId) {
   }
   if (perms.can_terminate) {
     hasAction = true;
-    html += `<button class="btn danger block" id="btn-terminate" style="margin-top:10px">🛑 终结任务</button>`;
+    html += `<button class="btn danger block" id="btn-terminate" style="margin-top:10px">🛑 结束任务</button>`;
   }
   if (!hasAction) html += `<div style="color:var(--grey);font-size:13px">当前无可用操作</div>`;
   html += `</div>`;
@@ -718,16 +718,16 @@ async function renderNode(app, nodeId) {
   if (apBtn) apBtn.onclick = () => msgModal(nodeId, "appeal");
   const termBtn = page.querySelector("#btn-terminate");
   if (termBtn) termBtn.onclick = () => {
-    /* 终结：二次确认 */
-    confirmModal("终结任务", perms.can_terminate_direct
-      ? "你是任务链发起人，终结后整条任务链将立即结束且不可恢复。确定要终结吗？"
-      : "终结申请将通过任务链发起人审核，审核同意后任务链结束。确定要申请终结吗？",
+    /* 结束：二次确认 */
+    confirmModal("结束任务", perms.can_terminate_direct
+      ? "你是任务链发起人，结束后整条任务链将立即结束且不可恢复。确定要结束吗？"
+      : "结束申请将通过任务链发起人审核，审核同意后任务链结束。确定要申请结束吗？",
       "第一次确认", "danger",
-      () => confirmModal("二次确认", "再次确认：终结任务不可撤销，是否继续？", "确定终结", "danger",
+      () => confirmModal("二次确认", "再次确认：结束任务不可撤销，是否继续？", "确定结束", "danger",
         async () => {
           try {
             const r = await POST(`/api/chains/${chain.id}/terminate`, { reason: "" });
-            toast(r.direct ? "任务链已终结" : "终结申请已提交，等待发起人审核");
+            toast(r.direct ? "任务链已结束" : "结束申请已提交，等待发起人审核");
             await refreshMe(); reload();
           } catch (e) { toast(e.message, true); }
         }));
@@ -899,7 +899,7 @@ async function renderMyPub(app) {
         const c = item.chain;
         return `<div class="card">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            ${c.status === "terminated" ? '<span class="chip grey">已终结</span>' : '<span class="chip blue">进行中</span>'}
+            ${c.status === "terminated" ? '<span class="chip grey">已结束</span>' : '<span class="chip blue">进行中</span>'}
             <span class="chip">${item.nodes.length} 个节点</span><span>${fmtDT(c.created_at)}</span>
           </div>
           <div class="card-title" style="margin-top:6px">${esc(c.title)}</div>
@@ -948,6 +948,7 @@ async function renderAdmin(app) {
             <div style="font-size:12px;color:var(--muted)">${esc(u.username)} · ${u.active ? "正常" : "已停用"}</div></div>
           <button class="btn plain small" data-reset="${u.id}">重置密码</button>
           <button class="btn ${u.active ? "danger" : "green"} small" data-toggle="${u.id}" data-active="${u.active}">${u.active ? "停用" : "启用"}</button>
+          <button class="btn plain small" data-deluser="${u.id}" style="color:var(--red)">删除</button>
         </div>`).join("");
       body.querySelector("#add-user").onclick = () => modal({
         title: "新增用户", okText: "创建",
@@ -983,6 +984,16 @@ async function renderAdmin(app) {
           } catch (e) { toast(e.message, true); }
         };
       });
+      body.querySelectorAll("[data-deluser]").forEach((el) => {
+        el.onclick = () => confirmModal("删除用户",
+          "仅能删除从未参与过任务的用户；参与过任务的用户为保证流程记录完整只能停用。确定删除该用户？",
+          "删除", "danger", async () => {
+            try {
+              await api("DELETE", `/api/admin/users/${el.dataset.deluser}`);
+              toast("用户已删除"); load();
+            } catch (e) { toast(e.message, true); }
+          });
+      });
     } else if (tab === "devices") {
       const devices = await GET("/api/devices");
       body.innerHTML = `<button class="btn block" id="add-dev" style="margin-bottom:10px">＋ 注册设备</button>` +
@@ -995,7 +1006,9 @@ async function renderAdmin(app) {
               ${c ? `<span class="dev-status"><span class="dot busy"></span>占用中</span>` : `<span class="dev-status"><span class="dot free"></span>空闲</span>`}
             </div>
             ${c ? `<div class="meta"><span>在 ${esc(c.holder_name)} 手上 · ${esc(c.chain_title || "")}节点${c.node_seq || ""}</span></div>
-              <div class="btn-row"><button class="btn warn small" data-release="${d.id}">强制释放</button></div>` : ""}
+              <div class="btn-row"><button class="btn warn small" data-release="${d.id}">强制释放</button>
+              <button class="btn plain small" data-deldev="${d.id}" style="color:var(--red)">删除</button></div>`
+              : `<div class="btn-row"><button class="btn plain small" data-deldev="${d.id}" style="color:var(--red)">删除</button></div>`}
           </div>`;
         }).join("") : `<div class="empty">暂无设备</div>`);
       body.querySelector("#add-dev").onclick = () => modal({
@@ -1017,6 +1030,16 @@ async function renderAdmin(app) {
           toast("已强制释放"); load();
         });
       });
+      body.querySelectorAll("[data-deldev]").forEach((el) => {
+        el.onclick = () => confirmModal("删除设备",
+          "占用中或已被任务用作前置要求的设备无法删除。删除后该设备的流转记录一并清除，确定删除？",
+          "删除", "danger", async () => {
+            try {
+              await api("DELETE", `/api/admin/devices/${el.dataset.deldev}`);
+              toast("设备已删除"); load();
+            } catch (e) { toast(e.message, true); }
+          });
+      });
     } else {
       const ov = await GET("/api/admin/overview");
       body.innerHTML = `<div class="card"><div style="display:flex;text-align:center">
@@ -1025,7 +1048,7 @@ async function renderAdmin(app) {
       </div></div>` +
         ov.chains.map((c) => `<div class="card">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            ${c.status === "terminated" ? '<span class="chip grey">已终结</span>' : '<span class="chip blue">进行中</span>'}
+            ${c.status === "terminated" ? '<span class="chip grey">已结束</span>' : '<span class="chip blue">进行中</span>'}
             <span class="chip">${c.node_count} 节点</span><span>发布：${esc(c.creator_name || "?")}</span>
           </div>
           <div class="card-title" style="margin-top:5px">${esc(c.title)}</div>

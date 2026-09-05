@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
-"""API 全流程冒烟测试：覆盖发布/前置/设备领用/反馈申诉/提交/审核/链式节点/终结/权限。"""
+"""API 全流程冒烟测试：覆盖发布/前置/设备领用/反馈申诉/提交/审核/链式节点/结束/权限。
+
+默认请求 http://127.0.0.1:8000（生产）。**测试会写入数据**——请用 run_tests.ps1
+在独立临时库 + 8001 端口上运行，不要对着生产库跑。
+"""
 import io
+import os
 import struct
 import sys
 import zlib
 
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.environ.get("TASKCHAIN_TEST_BASE", "http://127.0.0.1:8000")
 FAILED = []
 
 
@@ -189,27 +194,27 @@ def main():
                                                      "prereqs": [{"type": "task", "ref_node_id": n3}]})
     check("跨链循环依赖被拒", r.status_code == 400, r.text)
 
-    # 终结：受任人申请 → 发起人审核
-    r = ww.post(f"{BASE}/api/chains/{c1}/terminate", json={"reason": "航拍任务已全部完成，终结链条"})
-    check("受任人申请终结", r.ok and not r.json()["direct"], r.text)
+    # 结束：受任人申请 → 发起人审核
+    r = ww.post(f"{BASE}/api/chains/{c1}/terminate", json={"reason": "航拍任务已全部完成，结束链条"})
+    check("受任人申请结束", r.ok and not r.json()["direct"], r.text)
     d = zs.get(f"{BASE}/api/nodes/{n1}").json()
-    check("发起人看到待审终结申请", d["termination"] and d["perms"]["can_decide_terminate"])
+    check("发起人看到待审结束申请", d["termination"] and d["perms"]["can_decide_terminate"])
     me = zs.get(f"{BASE}/api/me").json()
-    check("终结申请计入待审核徽章", me["badges"]["pending_review"] >= 1)
+    check("结束申请计入待审核徽章", me["badges"]["pending_review"] >= 1)
     r = zs.post(f"{BASE}/api/chains/{c1}/terminate/review", json={"approve": True})
-    check("发起人同意终结", r.ok, r.text)
+    check("发起人同意结束", r.ok, r.text)
     d = zs.get(f"{BASE}/api/nodes/{n1}").json()
-    check("链状态已终结", d["chain"]["status"] == "terminated")
+    check("链状态已结束", d["chain"]["status"] == "terminated")
 
-    # 发起人直接终结（二次确认在前端，API 直接生效）
+    # 发起人直接结束（二次确认在前端，API 直接生效）
     r = ww.post(f"{BASE}/api/tasks", json={"title": "临时观察", "assignee_id": uid["lisi"]})
     c4 = r.json()["chain_id"]
     r = ww.post(f"{BASE}/api/chains/{c4}/terminate", json={"reason": "不做了"})
-    check("发起人直接终结", r.ok and r.json()["direct"], r.text)
+    check("发起人直接结束", r.ok and r.json()["direct"], r.text)
 
-    # 王五发起终结李四的链 → 李四拒绝
-    r = ww.post(f"{BASE}/api/chains/{c3}/terminate", json={"reason": "想终结"})
-    check("非参与者终结被拒", r.status_code == 403, r.text)
+    # 王五发起结束李四的链 → 李四拒绝
+    r = ww.post(f"{BASE}/api/chains/{c3}/terminate", json={"reason": "想结束"})
+    check("非参与者结束被拒", r.status_code == 403, r.text)
 
     # 权限：testu 无法查看
     r = tu.get(f"{BASE}/api/nodes/{n1}")
@@ -245,9 +250,24 @@ def main():
     devices = admin.get(f"{BASE}/api/devices").json()
     spare = next(d for d in devices if d["name"] == "备用机-05")
     r = admin.delete(f"{BASE}/api/admin/devices/{spare['id']}")
-    check("删除未占用且未被引用的设备", r.ok, r.text)
-    r = admin.delete(f"{BASE}/api/admin/devices/{uav['id']}")
+    check("删除空闲且未被引用的设备", r.ok, r.text)
+    r = admin.delete(f"{BASE}/api/admin/devices/{cam['id']}")
     check("被前置引用的设备不能删", r.status_code == 400, r.text)
+    r = admin.delete(f"{BASE}/api/admin/devices/99999")
+    check("删除不存在的设备 404", r.status_code == 404, f"got {r.status_code}")
+
+    # 用户删除
+    r = admin.delete(f"{BASE}/api/admin/users/{uid['zhangsan']}")
+    check("参与过任务的用户不能删", r.status_code == 400, r.text)
+    r = admin.delete(f"{BASE}/api/admin/users/1")
+    check("不能删除自己", r.status_code == 400, r.text)
+    r = admin.post(f"{BASE}/api/admin/users", json={"username": "delsz", "name": "待删员", "password": "delsz12345"})
+    check("新建待删用户", r.ok, r.text)
+    new_id = r.json()["id"]
+    r = admin.delete(f"{BASE}/api/admin/users/{new_id}")
+    check("删除未参与任务的用户", r.ok, r.text)
+    r = requests.post(f"{BASE}/api/login", json={"username": "delsz", "password": "delsz12345"})
+    check("已删用户无法登录", r.status_code == 400, f"got {r.status_code}")
 
     # 列表桶
     for s, name in [(ls, "李四"), (zs, "张三"), (ww, "王五")]:

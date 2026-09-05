@@ -62,6 +62,7 @@ The APK lands at `android/app/build/outputs/apk/debug/app-debug.apk`; sideload i
 | Review rights | Each node is reviewed by its **creator**; node 1's creator is the chain initiator |
 | Next-node creation | The current node's assignee (completer), after approval |
 | Termination rights | Chain initiator (direct) + any node assignee of the chain (needs initiator review) |
+| Deletion guard | Users who took part in tasks and devices referenced/occupied by tasks cannot be deleted (deactivate/release instead); unused ones can be deleted, keeping the audit trail intact |
 | Visibility | Chain initiator and node creators/assignees of a chain; admins see everything |
 | Accounts | Self-registration on the login page or admin-created in the console; passwords must be ≥8 chars |
 
@@ -72,7 +73,7 @@ task-chain/
 ├── start_server.bat        # one-click server launcher (Windows)
 ├── run_server.py           # entry point (prints LAN URL + QR code)
 ├── seed_demo.py            # optional demo users/devices
-├── test_api.py             # end-to-end API smoke test (72 assertions)
+├── test_api.py             # end-to-end API smoke test (87 assertions; run isolated via run_tests.ps1)
 ├── requirements.txt
 ├── app/                    # FastAPI backend
 ├── static/                 # SPA frontend (vanilla HTML/CSS/JS, no build step)

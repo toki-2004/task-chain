@@ -203,10 +203,17 @@ def me(request: Request):
         "WHERE t.status='pending' AND c2.creator_id=?",
         (user["id"],),
     ).fetchone()["c"]
+    feedback = db.execute(
+        "SELECT COUNT(*) c FROM messages m JOIN nodes n ON n.id=m.node_id "
+        "WHERE n.creator_id=? AND m.user_id<>? AND m.reply_to IS NULL "
+        "AND m.kind IN ('feedback','appeal') "
+        "AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.reply_to=m.id)",
+        (user["id"], user["id"]),
+    ).fetchone()["c"]
     db.close()
     return {
         "user": {"id": user["id"], "username": user["username"], "name": user["name"], "is_admin": bool(user["is_admin"])},
-        "badges": {"unfinished": unfinished, "pending_review": pending + term},
+        "badges": {"unfinished": unfinished, "pending_review": pending + term, "feedback": feedback},
     }
 
 
@@ -788,6 +795,18 @@ def list_tasks(request: Request, bucket: str = "unfinished"):
                 (user["id"],),
             ).fetchall()
             out["terminations"] = [dict(r) for r in terms]
+            fb = db.execute(
+                "SELECT m.id mid, m.kind, m.text, m.created_at, u.name sender, "
+                "n.id node_id, n.title node_title, c.title chain_title "
+                "FROM messages m JOIN nodes n ON n.id=m.node_id JOIN chains c ON c.id=n.chain_id "
+                "LEFT JOIN users u ON u.id=m.user_id "
+                "WHERE n.creator_id=? AND m.user_id<>? AND m.reply_to IS NULL "
+                "AND m.kind IN ('feedback','appeal') "
+                "AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.reply_to=m.id) "
+                "ORDER BY m.id DESC",
+                (user["id"], user["id"]),
+            ).fetchall()
+            out["feedback"] = [dict(r) for r in fb]
         elif bucket == "done":
             rows = db.execute(
                 "SELECT n.* FROM nodes n JOIN chains c ON c.id=n.chain_id "
@@ -945,11 +964,16 @@ def node_detail(node_id: int, request: Request):
                 prereq_block.append(p)
 
         can_assignee_act = is_assignee and node["status"] in ("in_progress", "rejected") and chain["status"] == "active"
+        can_edit_task_now = (is_creator and node["status"] in ("in_progress", "rejected", "pending_review")
+                             and chain["status"] == "active")
         perms = {
             "can_submit": can_assignee_act and prereq_ok,
             "can_feedback": can_assignee_act,
             "can_appeal": can_assignee_act,
             "can_review": is_creator and node["status"] == "pending_review",
+            "can_reply": is_creator,
+            "can_edit_task": can_edit_task_now,
+            "can_edit_submission": is_assignee and node["status"] == "pending_review",
             "can_next": is_assignee and node["status"] == "approved" and chain["status"] == "active",
             "can_terminate": chain["status"] == "active" and not term and (
                 is_chain_creator or is_assignee or
@@ -983,6 +1007,95 @@ def node_detail(node_id: int, request: Request):
 class SubmitBody(BaseModel):
     note: str = ""
     files: list = []
+
+
+class NodeEditBody(BaseModel):
+    title: str = ""
+    content: str = ""
+    criteria: str = ""
+    deadline: str = ""
+    assignee_id: int = 0
+
+
+@app.put("/api/nodes/{node_id}/edit")
+def edit_node(node_id: int, body: NodeEditBody, request: Request):
+    """节点创建者修改任务（进行中/被驳回/待审核期间），并把变更写进时间线。"""
+    user = require_user(request)
+    with db_ctx() as db:
+        node = db.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
+        if not node:
+            raise HTTPException(404, "任务不存在")
+        if node["creator_id"] != user["id"]:
+            raise HTTPException(403, "只有该节点的创建者（发布者）可以修改任务")
+        chain = db.execute("SELECT * FROM chains WHERE id=?", (node["chain_id"],)).fetchone()
+        if chain["status"] != "active":
+            raise HTTPException(400, "任务链已结束，不能修改")
+        if node["status"] not in ("in_progress", "rejected", "pending_review"):
+            raise HTTPException(400, "该任务已完成，不能修改（如需继续流转请创建下一节点）")
+        changes = []
+        sets, vals = [], []
+        title = body.title.strip()
+        if title and title != node["title"]:
+            sets.append("title=?"); vals.append(title)
+            changes.append(f"标题改为「{title}」")
+        if body.content.strip() and body.content != node["content"]:
+            sets.append("content=?"); vals.append(body.content)
+            changes.append("任务内容已更新")
+        if body.criteria.strip() and body.criteria != node["criteria"]:
+            sets.append("criteria=?"); vals.append(body.criteria)
+            changes.append("完成条件已更新")
+        deadline = (body.deadline or "").strip()
+        if deadline:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", deadline):
+                raise HTTPException(400, "截止时间格式不正确")
+            deadline = deadline.replace("T", " ")
+        if deadline != (node["deadline"] or ""):
+            sets.append("deadline=?"); vals.append(deadline or None)
+            changes.append(f"截止时间改为 {deadline or '（无）'}")
+        if body.assignee_id and body.assignee_id != node["assignee_id"]:
+            au = db.execute("SELECT * FROM users WHERE id=? AND active=1", (body.assignee_id,)).fetchone()
+            if not au:
+                raise HTTPException(400, "新受任人不存在或已停用")
+            sets.append("assignee_id=?"); vals.append(body.assignee_id)
+            changes.append(f"受任人改为 {au['name']}")
+        if not changes:
+            return {"ok": True, "changes": []}
+        vals.append(node_id)
+        db.execute(f"UPDATE nodes SET {', '.join(sets)} WHERE id=?", vals)
+        log_event(db, node["chain_id"], node_id, user["id"], "task_edit", {"changes": "；".join(changes)})
+    return {"ok": True, "changes": changes}
+
+
+class SubmitEditBody(BaseModel):
+    note: str = ""
+    files: list = []
+
+
+@app.put("/api/nodes/{node_id}/submission")
+def edit_submission(node_id: int, body: SubmitEditBody, request: Request):
+    """受任人在审核人处理前修改自己的提交（说明 + 证明文件整体替换）。"""
+    user = require_user(request)
+    with db_ctx() as db:
+        node = db.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
+        if not node:
+            raise HTTPException(404, "任务不存在")
+        if node["assignee_id"] != user["id"]:
+            raise HTTPException(403, "只有受任人可以修改提交")
+        if node["status"] != "pending_review":
+            raise HTTPException(400, "仅待审核期间可以修改提交")
+        sub = db.execute("SELECT * FROM submissions WHERE node_id=? ORDER BY id DESC LIMIT 1",
+                         (node_id,)).fetchone()
+        if not sub:
+            raise HTTPException(400, "尚无提交记录")
+        flist = valid_file_ids(db, body.files, user)
+        db.execute("UPDATE submissions SET note=? WHERE id=?", (body.note or "", sub["id"]))
+        db.execute("DELETE FROM submission_files WHERE submission_id=?", (sub["id"],))
+        for fid, name in flist:
+            db.execute("INSERT INTO submission_files(submission_id, file_id, name) VALUES(?,?,?)",
+                       (sub["id"], fid, name))
+        log_event(db, node["chain_id"], node_id, user["id"], "submission_edit",
+                  {"files": len(flist)})
+    return {"ok": True}
 
 
 @app.post("/api/nodes/{node_id}/submit")
@@ -1100,6 +1213,9 @@ def reply_message(mid: int, body: ReplyBody, request: Request):
             db.execute("UPDATE messages SET status=? WHERE id=?", (body.resolve, mid))
             log_event(db, node["chain_id"], node["id"], user["id"], "appeal_resolve",
                       {"result": body.resolve, "text": text[:100]})
+        elif msg["kind"] == "feedback":
+            db.execute("UPDATE messages SET status='resolved' WHERE id=?", (mid,))
+            log_event(db, node["chain_id"], node["id"], user["id"], "reply", {"text": text[:100]})
         else:
             log_event(db, node["chain_id"], node["id"], user["id"], "reply", {"text": text[:100]})
     return {"ok": True}

@@ -418,6 +418,66 @@ def main():
             r = s.get(f"{BASE}/api/tasks?bucket={b}")
             check(f"{name} 列表 {b}", r.ok, r.text)
 
+    # ---- 反馈/申诉通知与回复、任务修改、提交修改 ----
+    r = zs.post(f"{BASE}/api/tasks", json={"title": "沟通与修改测试", "content": "原始内容",
+                                           "criteria": "原始条件", "deadline": "2099-01-01T18:00",
+                                           "assignee_id": uid["lisi"]})
+    n_cm, c_cm = r.json()["node_id"], r.json()["chain_id"]
+    ls.post(f"{BASE}/api/nodes/{n_cm}/message", json={"text": "有个情况要反馈", "kind": "feedback"})
+    ls.post(f"{BASE}/api/nodes/{n_cm}/message", json={"text": "任务不合理，截止太紧", "kind": "appeal"})
+    me = zs.get(f"{BASE}/api/me").json()
+    fb_before = me["badges"]["feedback"]
+    check("发布人收到反馈角标", fb_before >= 2, str(me["badges"]))
+    r = zs.get(f"{BASE}/api/tasks?bucket=pending").json()
+    check("待审核列表含反馈/申诉卡片", len(r.get("feedback", [])) >= 2, str(len(r.get("feedback", []))))
+    appeal_cm = next(f for f in r["feedback"] if f["kind"] == "appeal" and f["node_id"] == n_cm)
+
+    # 回复反馈 → 反馈标记已处理、角标减少
+    fb_cm = next(f for f in r["feedback"] if f["kind"] == "feedback" and f["node_id"] == n_cm)
+    r = zs.post(f"{BASE}/api/messages/{fb_cm['mid']}/reply", json={"text": "收到，已安排"})
+    check("发布人回复反馈", r.ok, r.text)
+    me = zs.get(f"{BASE}/api/me").json()
+    check("回复后反馈角标减少", me["badges"]["feedback"] == fb_before - 1, str(me["badges"]))
+    d = ls.get(f"{BASE}/api/nodes/{n_cm}").json()
+    fb_item = next(m for m in d["messages"] if m["id"] == fb_cm["mid"])
+    check("反馈已标记已处理", fb_item["status"] == "resolved", fb_item["status"])
+    check("回复显示在沟通记录", any(x["text"] == "收到，已安排" for x in fb_item["replies"]))
+
+    # 申诉处理：创建者修改任务 → 变更摘要 → 回复申诉并受理
+    r = ls.put(f"{BASE}/api/nodes/{n_cm}/edit", json={"deadline": "2099-02-01T18:00"})
+    check("非创建者修改任务被拒", r.status_code == 403, f"got {r.status_code}")
+    r = zs.put(f"{BASE}/api/nodes/{n_cm}/edit", json={"deadline": "2099-02-01T18:00", "criteria": "调整后的完成条件"})
+    check("创建者修改任务并返回变更摘要", r.ok and len(r.json()["changes"]) == 2, r.text)
+    d = ls.get(f"{BASE}/api/nodes/{n_cm}").json()
+    check("修改后截止时间生效", d["node"]["deadline"] == "2099-02-01 18:00", str(d["node"]["deadline"]))
+    r = zs.post(f"{BASE}/api/messages/{appeal_cm['mid']}/reply",
+                json={"text": "已将截止时间延长并调整完成条件", "resolve": "accepted"})
+    check("申诉回复并受理", r.ok, r.text)
+    d = ls.get(f"{BASE}/api/nodes/{n_cm}").json()
+    ap_item = next(m for m in d["messages"] if m["id"] == appeal_cm["mid"])
+    check("申诉状态已受理", ap_item["status"] == "accepted", ap_item["status"])
+    check("申诉回复推送给申诉人(沟通记录可见)", any("延长" in x["text"] for x in ap_item["replies"]))
+    types = [e["type"] for e in d["events"]]
+    check("时间线含 task_edit", "task_edit" in types, str(types))
+
+    # 受任人待审核期间修改提交
+    r = ls.post(f"{BASE}/api/nodes/{n_cm}/submit", json={"note": "初版说明", "files": []})
+    check("提交任务", r.ok, r.text)
+    r = ls.put(f"{BASE}/api/nodes/{n_cm}/submission", json={"note": "修改后的说明", "files": [fid]})
+    check("待审核期间修改提交", r.ok, r.text)
+    d = zs.get(f"{BASE}/api/nodes/{n_cm}").json()
+    check("审核人看到修改后的说明", "修改后的说明" in d["submissions"][0]["note"], d["submissions"][0]["note"])
+    check("修改后的证明文件生效", len(d["submissions"][0]["files"]) == 1, str(len(d["submissions"][0]["files"])))
+    types = [e["type"] for e in d["events"]]
+    check("时间线含 submission_edit", "submission_edit" in types, str(types))
+    r = zs.post(f"{BASE}/api/nodes/{n_cm}/review", json={"approve": True})
+    check("审核通过", r.ok, r.text)
+    r = ls.put(f"{BASE}/api/nodes/{n_cm}/submission", json={"note": "迟到的修改", "files": []})
+    check("审核后不能修改提交", r.status_code == 400, f"got {r.status_code}")
+    r = zs.put(f"{BASE}/api/nodes/{n_cm}/edit", json={"title": "x"})
+    check("审核后不能修改任务", r.status_code == 400, f"got {r.status_code}")
+    zs.post(f"{BASE}/api/chains/{c_cm}/terminate", json={"reason": "测试完成"})
+
     # 登录防爆破（放在最后：锁的是不存在的用户名，不影响其他用例）
     for i in range(5):
         requests.post(f"{BASE}/api/login", json={"username": "bruteforce_x", "password": "wrong"})

@@ -130,7 +130,7 @@ function bindViewer(root) {
 
 /* 底部导航 */
 function tabBar(active) {
-  const bU = ME && ME.badges ? ME.badges.unfinished + ME.badges.pending_review : 0;
+  const bU = ME && ME.badges ? ME.badges.unfinished + ME.badges.pending_review + (ME.badges.feedback || 0) : 0;
   return `<div class="tabbar">
     <div class="tab ${active === "home" ? "active" : ""}" data-go="#/home">
       <div class="ico">🏠<span class="badge" style="display:${bU ? "inline" : "none"}">${bU}</span></div>首页
@@ -254,62 +254,86 @@ async function renderHome(app) {
   app.querySelector("[data-go='#/create']").onclick = () => { location.hash = "#/create"; };
 
   const seg = app.querySelector("#home-seg");
-  const drawSeg = (counts) => {
-    seg.innerHTML = tabs.map(([k, label]) => {
-      const c = counts[k];
-      return `<div class="seg-item ${homeTab === k ? "active" : ""}" data-tab="${k}">${label}${c ? `<span class="count">${c}</span>` : ""}</div>`;
-    }).join("");
+  const listEl = app.querySelector("#home-list");
+  const cache = { unfinished: [], pending: [], done: [], terminations: [], feedback: [] };
+  const counts = () => ({
+    unfinished: cache.unfinished.length,
+    pending: cache.pending.length + cache.terminations.length + cache.feedback.length,
+    done: cache.done.length,
+  });
+
+  const drawSeg = () => {
+    const ct = counts();
+    seg.innerHTML = tabs.map(([k, label]) => `<div class="seg-item ${homeTab === k ? "active" : ""}" data-tab="${k}">${label}${ct[k] ? `<span class="count">${ct[k]}</span>` : ""}</div>`).join("");
     seg.querySelectorAll(".seg-item").forEach((el) => {
-      el.onclick = () => { homeTab = el.dataset.tab; loadList(); drawSeg(seg._counts || {}); };
+      el.onclick = () => { homeTab = el.dataset.tab; drawSeg(); drawList(); };
     });
   };
-  seg._counts = {};
 
-  async function loadList() {
-    const listEl = app.querySelector("#home-list");
-    try {
-      const data = await GET("/api/tasks?bucket=" + homeTab);
-      if (homeTab === "pending") {
-        seg._counts = { unfinished: ME ? ME.badges.unfinished : 0, pending: data.tasks.length + data.terminations.length, done: null };
-      } else {
-        seg._counts = { [homeTab]: data.tasks.length };
-      }
-      drawSeg(seg._counts);
-      let html = "";
-      if (homeTab === "pending" && data.terminations.length) {
-        html += `<div class="section-title">结束申请（待我审核）</div>` + data.terminations.map((t) => `
-          <div class="card">
-            <div style="display:flex;gap:6px;align-items:center"><span class="chip red">结束申请</span><span class="chip">${esc(t.chain_title)}</span></div>
-            <div class="card-title" style="margin-top:6px">${esc(t.chain_title)}</div>
-            <div class="meta"><span>申请人：${esc(t.applicant_name)}</span><span>${fmtDT(t.created_at)}</span></div>
-            ${t.reason ? `<div style="font-size:13px;color:var(--muted);margin-top:4px">理由：${esc(t.reason)}</div>` : ""}
-            <div class="btn-row">
-              <button class="btn green small" data-term="${t.chain_id}" data-approve="1">同意结束</button>
-              <button class="btn plain small" data-term="${t.chain_id}" data-approve="0">拒绝</button>
-            </div>
-          </div>`).join("");
-      }
-      const label = homeTab === "pending" ? (data.terminations.length ? "待审核任务" : "") : "";
-      if (label) html += `<div class="section-title">${label}</div>`;
-      if (data.tasks.length) {
-        html += data.tasks.map((t) => taskCard(t, { showSubmitter: true })).join("");
-      } else if (homeTab !== "pending" || !data.terminations.length) {
-        const emptyText = { unfinished: "暂无未完成任务", pending: "暂无待审核内容", done: "暂无已完成任务" }[homeTab];
-        html += `<div class="empty">${emptyText}</div>`;
-      }
-      listEl.innerHTML = html;
-      bindViewer(listEl);
-      listEl.querySelectorAll(".task-card").forEach((el) => {
-        el.onclick = () => { location.hash = "#/node/" + el.dataset.node; };
-      });
-      listEl.querySelectorAll("[data-term]").forEach((el) => {
-        el.onclick = () => decideTerminate(el.dataset.term, el.dataset.approve === "1", loadList);
-      });
-    } catch (e) {
-      listEl.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  const drawList = () => {
+    let html = "";
+    if (homeTab === "pending" && cache.feedback.length) {
+      html += `<div class="section-title">反馈与申诉（待我回复）</div>` + cache.feedback.map((f) => `
+        <div class="card task-card" data-node="${f.node_id}">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <span class="chip ${f.kind === "appeal" ? "orange" : "blue"}">${f.kind === "appeal" ? "申诉·待处理" : "反馈·待回复"}</span>
+            <span class="chip">${esc(f.chain_title)}</span>
+          </div>
+          <div class="card-title" style="margin-top:6px">${esc(f.node_title)}</div>
+          <div class="meta"><span>${esc(f.sender)}</span><span>${fmtDT(f.created_at)}</span></div>
+          <div style="font-size:13px;color:var(--muted);margin-top:4px">${esc(f.text.slice(0, 50))}${f.text.length > 50 ? "…" : ""}</div>
+        </div>`).join("");
     }
+    if (homeTab === "pending" && cache.terminations.length) {
+      html += `<div class="section-title">结束申请（待我审核）</div>` + cache.terminations.map((t) => `
+        <div class="card">
+          <div style="display:flex;gap:6px;align-items:center"><span class="chip red">结束申请</span><span class="chip">${esc(t.chain_title)}</span></div>
+          <div class="card-title" style="margin-top:6px">${esc(t.chain_title)}</div>
+          <div class="meta"><span>申请人：${esc(t.applicant_name)}</span><span>${fmtDT(t.created_at)}</span></div>
+          ${t.reason ? `<div style="font-size:13px;color:var(--muted);margin-top:4px">理由：${esc(t.reason)}</div>` : ""}
+          <div class="btn-row">
+            <button class="btn green small" data-term="${t.chain_id}" data-approve="1">同意结束</button>
+            <button class="btn plain small" data-term="${t.chain_id}" data-approve="0">拒绝</button>
+          </div>
+        </div>`).join("");
+    }
+    const label = homeTab === "pending" && (cache.feedback.length || cache.terminations.length) ? "待审核任务" : "";
+    if (label) html += `<div class="section-title">${label}</div>`;
+    if (cache[homeTab] && cache[homeTab].length) {
+      html += cache[homeTab].map((t) => taskCard(t, { showSubmitter: true })).join("");
+    } else if (!(homeTab === "pending" && (cache.feedback.length || cache.terminations.length))) {
+      const emptyText = { unfinished: "暂无未完成任务", pending: "暂无待审核内容", done: "暂无已完成任务" }[homeTab];
+      html += `<div class="empty">${emptyText}</div>`;
+    }
+    listEl.innerHTML = html;
+    bindViewer(listEl);
+    listEl.querySelectorAll(".task-card").forEach((el) => {
+      el.onclick = () => { location.hash = "#/node/" + el.dataset.node; };
+    });
+    listEl.querySelectorAll("[data-term]").forEach((el) => {
+      el.onclick = (ev) => {
+        ev.stopPropagation();
+        decideTerminate(el.dataset.term, el.dataset.approve === "1", refresh);
+      };
+    });
+  };
+
+  async function refresh() {
+    try {
+      const [u, p, d] = await Promise.all([
+        GET("/api/tasks?bucket=unfinished"),
+        GET("/api/tasks?bucket=pending"),
+        GET("/api/tasks?bucket=done"),
+      ]);
+      cache.unfinished = u.tasks; cache.done = d.tasks;
+      cache.pending = p.tasks; cache.terminations = p.terminations || []; cache.feedback = p.feedback || [];
+      await refreshMe();
+      updateTabBadge();
+    } catch (e) { /* 静默 */ }
+    drawSeg();
+    drawList();
   }
-  await loadList();
+  await refresh();
 }
 
 async function decideTerminate(chainId, approve, after) {
@@ -489,6 +513,7 @@ const EVENT_LABEL = {
   appeal: "申诉", reply: "回复", appeal_resolve: "申诉处理",
   terminate_apply: "申请结束", terminate_approve: "同意结束", terminate_reject: "拒绝结束",
   terminate_direct: "结束任务", device_checkout: "领用设备", device_return: "归还设备", device_release: "强制释放设备",
+  task_edit: "修改任务", submission_edit: "修改提交",
 };
 
 async function renderNode(app, nodeId) {
@@ -549,6 +574,14 @@ async function renderNode(app, nodeId) {
   if (perms.can_review) {
     hasAction = true;
     html += `<div class="btn-row"><button class="btn green" id="btn-approve">审核通过</button><button class="btn danger" id="btn-reject">驳回</button></div>`;
+  }
+  if (perms.can_edit_task) {
+    hasAction = true;
+    html += `<button class="btn plain block" id="btn-edit-task" style="margin-top:10px">✏️ 修改任务（内容/条件/截止时间/受任人）</button>`;
+  }
+  if (perms.can_edit_submission) {
+    hasAction = true;
+    html += `<button class="btn warn block" id="btn-edit-sub" style="margin-top:10px">📝 修改提交内容（审核前可修改）</button>`;
   }
   if (perms.can_next) {
     hasAction = true;
@@ -626,11 +659,21 @@ async function renderNode(app, nodeId) {
     const kindChip = m.kind === "appeal"
       ? `<span class="chip ${m.status === "open" ? "orange" : m.status === "accepted" ? "green" : "grey"}">申诉·${m.status === "open" ? "待处理" : m.status === "accepted" ? "已受理" : "未受理"}</span>`
       : `<span class="chip blue">反馈</span>`;
+    const isAppeal = m.kind === "appeal";
+    let ops = "";
+    if (perms.can_reply && m.status === "open") {
+      ops = `<div class="btn-row" style="margin-top:8px">
+        <button class="btn plain small" data-reply="${m.id}">💬 回复</button>
+        ${isAppeal ? `<button class="btn green small" data-appeal-edit="${m.id}">✏️ 修改任务并处理</button>` : ""}
+        ${isAppeal ? `<button class="btn small" data-appeal-resolve="${m.id}" data-res="accepted">受理</button>
+        <button class="btn danger small" data-appeal-resolve="${m.id}" data-res="rejected">不受理</button>` : ""}
+      </div>`;
+    }
     return `<div class="msg-item">
       <div class="head"><b>${esc(m.uname)}</b>${kindChip}<span style="color:var(--grey);font-size:11.5px">${esc(m.created_at)}</span></div>
       <div class="text">${esc(m.text)}</div>
       ${m.replies.length ? `<div class="replies">${m.replies.map((r) => `<div class="msg-item"><div class="head"><b>${esc(r.uname)}</b><span style="color:var(--grey);font-size:11.5px">${esc(r.created_at)}</span></div><div class="text">${esc(r.text)}</div></div>`).join("")}</div>` : ""}
-      ${perms.can_review && m.status === "open" ? "" : ""}
+      ${ops}
     </div>`;
   }).join("") : `<div style="color:var(--grey);font-size:13px;padding:6px 0">暂无反馈/申诉</div>`;
   html += `</div>`;
@@ -755,6 +798,127 @@ async function renderNode(app, nodeId) {
   page.querySelectorAll("[data-where]").forEach((el) => {
     el.onclick = () => { location.hash = "#/device/" + el.dataset.where; };
   });
+
+  const editBtn = page.querySelector("#btn-edit-task");
+  if (editBtn) editBtn.onclick = () => openEditTaskModal(node, null, reload);
+  const editSubBtn = page.querySelector("#btn-edit-sub");
+  if (editSubBtn) editSubBtn.onclick = () => openEditSubModal(node, reload);
+  page.querySelectorAll("[data-reply]").forEach((el) => {
+    el.onclick = () => {
+      const mid = el.dataset.reply;
+      modal({
+        title: "回复", okText: "发送",
+        body: `<div class="form-item"><textarea id="rp-text" placeholder="写下你的回复…"></textarea></div>`,
+        onOk: async (mask, close) => {
+          await POST(`/api/messages/${mid}/reply`, { text: mask.querySelector("#rp-text").value });
+          toast("已回复"); close(); reload();
+        },
+      });
+    };
+  });
+  page.querySelectorAll("[data-appeal-resolve]").forEach((el) => {
+    el.onclick = () => {
+      const mid = el.dataset.appealResolve;
+      const res = el.dataset.res;
+      modal({
+        title: res === "accepted" ? "受理申诉" : "不受理申诉", okText: res === "accepted" ? "受理并回复" : "不受理并回复",
+        body: `<div class="form-item"><textarea id="rp-text" placeholder="说明处理情况（将推送给申诉人）"></textarea></div>`,
+        onOk: async (mask, close) => {
+          await POST(`/api/messages/${mid}/reply`, { text: mask.querySelector("#rp-text").value, resolve: res });
+          toast("已处理并回复申诉人"); close(); reload();
+        },
+      });
+    };
+  });
+  page.querySelectorAll("[data-appeal-edit]").forEach((el) => {
+    el.onclick = () => openEditTaskModal(node, +el.dataset.appealEdit, reload);
+  });
+}
+
+/** 修改任务弹窗（创建者）；appealMsgId 传入时，保存后自动回复申诉并受理。 */
+async function openEditTaskModal(node, appealMsgId, reload) {
+  let users = [];
+  try { users = await GET("/api/users"); } catch (e) { toast(e.message, true); return; }
+  modal({
+    title: appealMsgId ? "修改任务（处理申诉）" : "修改任务",
+    okText: appealMsgId ? "保存并回复申诉人" : "保存",
+    body: `<div class="form-item"><label>主题</label><input id="et-title" value="${esc(node.title)}"></div>
+      <div class="form-item"><label>任务内容</label><textarea id="et-content">${esc(node.content)}</textarea></div>
+      <div class="form-item"><label>任务完成条件</label><textarea id="et-criteria">${esc(node.criteria)}</textarea></div>
+      <div class="form-item"><label>截止时间</label><input id="et-deadline" type="datetime-local" value="${esc((node.deadline || "").replace(" ", "T"))}"></div>
+      <div class="form-item"><label>受任人</label><select id="et-assignee">
+        ${users.filter((u) => u.active).map((u) => `<option value="${u.id}" ${u.id === node.assignee_id ? "selected" : ""}>${esc(u.name)}（${esc(u.username)}）</option>`).join("")}
+      </select></div>
+      ${appealMsgId ? `<div class="form-item"><label>处理说明（将推送给申诉人）</label><textarea id="et-reply" placeholder="说明你针对申诉做了哪些调整…"></textarea></div>` : ""}`,
+    onOk: async (mask, close) => {
+      const r = await api("PUT", `/api/nodes/${node.id}/edit`, {
+        title: mask.querySelector("#et-title").value,
+        content: mask.querySelector("#et-content").value,
+        criteria: mask.querySelector("#et-criteria").value,
+        deadline: mask.querySelector("#et-deadline").value,
+        assignee_id: +mask.querySelector("#et-assignee").value || 0,
+      });
+      const changes = r.changes || [];
+      if (appealMsgId) {
+        const reply = mask.querySelector("#et-reply").value.trim();
+        const text = (reply || "已针对申诉调整任务") + (changes.length ? `
+（调整：${changes.join("；")}）` : `
+（任务内容已确认，未做调整）`);
+        await POST(`/api/messages/${appealMsgId}/reply`, { text, resolve: "accepted" });
+      }
+      toast(changes.length ? "已修改：" + changes.join("；") : "未做修改");
+      close(); reload();
+    },
+  });
+}
+
+/** 修改提交弹窗（受任人，待审核期间）：改说明 + 增删证明文件。 */
+function openEditSubModal(node, reload) {
+  let files = []; // {id,name}
+  let cur = null;
+  modal({
+    title: "修改提交内容", okText: "保存修改",
+    body: `<div class="form-item"><label>完成说明</label><textarea id="es-note"></textarea></div>
+      <div class="form-item"><label>当前证明文件（点 ✕ 移除）</label><div id="es-files" style="margin-top:4px"></div>
+      <input type="file" id="es-add" multiple accept="image/*,video/*" style="margin-top:8px;padding:8px"></div>`,
+    onOk: async (mask, close) => {
+      await api("PUT", `/api/nodes/${node.id}/submission`, {
+        note: mask.querySelector("#es-note").value,
+        files: files.map((f) => f.id),
+      });
+      toast("提交内容已更新"); close(); reload();
+    },
+  });
+  const mask = document.querySelector(".modal-mask");
+  (async () => {
+    try {
+      const d = await GET("/api/nodes/" + node.id);
+      cur = (d.submissions || [])[0];
+      if (cur) {
+        mask.querySelector("#es-note").value = cur.note || "";
+        files = (cur.files || []).map((f) => ({ id: f.file_id, name: f.name }));
+        drawFiles();
+      }
+    } catch (e) { toast(e.message, true); }
+  })();
+  function drawFiles() {
+    mask.querySelector("#es-files").innerHTML = files.length
+      ? files.map((f, i) => `<div><span class="chip dark">${esc(f.name || f.id)}</span> <span data-rmf="${i}" style="color:var(--red);cursor:pointer">✕</span></div>`).join("")
+      : `<span style="color:var(--grey);font-size:12px">（无）</span>`;
+    mask.querySelectorAll("[data-rmf]").forEach((el) => {
+      el.onclick = () => { files.splice(+el.dataset.rmf, 1); drawFiles(); };
+    });
+  }
+  mask.querySelector("#es-add").onchange = async (e) => {
+    for (const f of [...e.target.files]) {
+      try {
+        const fd = new FormData(); fd.append("file", f);
+        const r = await api("POST", "/api/files", fd, true);
+        files.push(r); drawFiles();
+      } catch (err) { toast(f.name + "：" + err.message, true); }
+    }
+    e.target.value = "";
+  };
 }
 
 function msgModal(nodeId, kind) {
@@ -1259,12 +1423,16 @@ async function render() {
 }
 
 window.addEventListener("hashchange", render);
+function updateTabBadge() {
+  if (!ME) return;
+  const bU = ME.badges.unfinished + ME.badges.pending_review + (ME.badges.feedback || 0);
+  const badge = document.querySelector(".tabbar .badge");
+  if (badge) { badge.style.display = bU ? "inline" : "none"; badge.textContent = bU; }
+}
 setInterval(async () => {
   if (!ME || document.querySelector(".modal-mask") || /input|textarea|select/i.test(document.activeElement.tagName)) return;
   await refreshMe();
-  const bU = ME.badges.unfinished + ME.badges.pending_review;
-  const badge = document.querySelector(".tabbar .badge");
-  if (badge) { badge.style.display = bU ? "inline" : "none"; badge.textContent = bU; }
+  updateTabBadge();
 }, 30000);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;

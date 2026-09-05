@@ -12,6 +12,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import time as _time
 import uuid
 from contextlib import contextmanager
 
@@ -21,9 +22,17 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .db import get_db, init_db, UPLOAD_DIR
-from .util import hash_password, verify_password, new_session, drop_session, log_event
+from .util import (hash_password, verify_password, needs_rehash, new_session,
+                   drop_session, log_event)
 
 app = FastAPI(title="协同任务链")
+
+MIN_PASSWORD_LEN = 8
+
+# 登录防爆破：同 IP+用户名 连续失败 5 次锁 15 分钟（内存态，重启即清）
+LOGIN_MAX_FAILS = 5
+LOGIN_LOCK_SECONDS = 900
+_login_fails = {}
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".3gp"}
@@ -80,16 +89,86 @@ class LoginBody(BaseModel):
     password: str
 
 
+def _login_lock_key(request: Request, username: str):
+    ip = request.client.host if request.client else "?"
+    return (ip, username.strip().lower())
+
+
+def _login_locked(key):
+    entry = _login_fails.get(key)
+    if not entry:
+        return 0
+    count, first_ts = entry
+    if _time.time() - first_ts > LOGIN_LOCK_SECONDS:
+        _login_fails.pop(key, None)
+        return 0
+    if count >= LOGIN_MAX_FAILS:
+        return int(LOGIN_LOCK_SECONDS - (_time.time() - first_ts)) + 1
+    return 0
+
+
+def _login_record_fail(key):
+    entry = _login_fails.get(key)
+    now = _time.time()
+    if entry and now - entry[1] <= LOGIN_LOCK_SECONDS:
+        _login_fails[key] = (entry[0] + 1, entry[1])
+    else:
+        _login_fails[key] = (1, now)
+
+
 @app.post("/api/login")
-def login(body: LoginBody):
+def login(body: LoginBody, request: Request):
+    key = _login_lock_key(request, body.username)
+    remain = _login_locked(key)
+    if remain:
+        raise HTTPException(429, f"失败次数过多，请 {remain // 60 + 1} 分钟后再试")
     with db_ctx() as db:
         row = db.execute("SELECT * FROM users WHERE username=?", (body.username.strip(),)).fetchone()
     if not row or not verify_password(body.password, row["password_hash"]):
+        _login_record_fail(key)
         raise HTTPException(400, "用户名或密码错误")
     if not row["active"]:
         raise HTTPException(403, "该账号已被停用")
+    _login_fails.pop(key, None)
+    # 旧格式哈希在登录成功时透明升级；顺手清理过期会话
+    if needs_rehash(row["password_hash"]):
+        with db_ctx() as db:
+            db.execute("UPDATE users SET password_hash=? WHERE id=?",
+                       (hash_password(body.password), row["id"]))
+    with db_ctx() as db:
+        db.execute("DELETE FROM sessions WHERE created_at < datetime('now','-30 days')")
     token = new_session(row["id"])
     resp = JSONResponse({"ok": True, "user": {"id": row["id"], "name": row["name"], "is_admin": bool(row["is_admin"])}})
+    resp.set_cookie("sid", token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30, path="/")
+    return resp
+
+
+class RegisterBody(BaseModel):
+    username: str
+    name: str
+    password: str
+
+
+@app.post("/api/register")
+def register(body: RegisterBody, request: Request):
+    username = body.username.strip()
+    name = body.name.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]{2,32}", username):
+        raise HTTPException(400, "账号只能为 2-32 位字母/数字/下划线")
+    if not name:
+        raise HTTPException(400, "请填写姓名")
+    if len(body.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(400, f"密码至少 {MIN_PASSWORD_LEN} 位")
+    with db_ctx() as db:
+        if db.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+            raise HTTPException(400, "该账号已被注册")
+        cur = db.execute(
+            "INSERT INTO users(username, password_hash, name) VALUES(?,?,?)",
+            (username, hash_password(body.password), name),
+        )
+        uid = cur.lastrowid
+    token = new_session(uid)
+    resp = JSONResponse({"ok": True, "user": {"id": uid, "name": name, "is_admin": False}})
     resp.set_cookie("sid", token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30, path="/")
     return resp
 
@@ -141,8 +220,8 @@ def change_password(body: PasswordBody, request: Request):
         row = db.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
         if not verify_password(body.old, row["password_hash"]):
             raise HTTPException(400, "原密码不正确")
-        if len(body.new) < 4:
-            raise HTTPException(400, "新密码至少 4 位")
+        if len(body.new) < MIN_PASSWORD_LEN:
+            raise HTTPException(400, f"新密码至少 {MIN_PASSWORD_LEN} 位")
         db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(body.new), user["id"]))
     return {"ok": True}
 
@@ -180,8 +259,8 @@ def admin_add_user(body: UserBody, request: Request):
         raise HTTPException(400, "账号只能为 2-32 位字母/数字/下划线")
     if not body.name.strip():
         raise HTTPException(400, "请填写姓名")
-    if len(body.password) < 4:
-        raise HTTPException(400, "密码至少 4 位")
+    if len(body.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(400, f"密码至少 {MIN_PASSWORD_LEN} 位")
     with db_ctx() as db:
         if db.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
             raise HTTPException(400, "该账号已存在")
@@ -200,8 +279,8 @@ class ResetBody(BaseModel):
 @app.post("/api/admin/users/{uid}/reset")
 def admin_reset_user(uid: int, body: ResetBody, request: Request):
     require_admin(request)
-    if len(body.password) < 4:
-        raise HTTPException(400, "密码至少 4 位")
+    if len(body.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(400, f"密码至少 {MIN_PASSWORD_LEN} 位")
     with db_ctx() as db:
         db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(body.password), uid))
     return {"ok": True}

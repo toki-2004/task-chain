@@ -26,6 +26,7 @@ Works as a web app (usable directly in the phone browser, nothing to install) an
 - **Multi-node task chains**: once a node is approved, its **completer** creates the next node and assigns the next person; the chain initiator sees everything.
 - **Termination**: any assignee may apply to terminate (double confirmation), reviewed by the **chain initiator**; the initiator can terminate directly. Termination ends the whole chain and is irreversible.
 - **Home page**: everyone gets "Unfinished / Pending review / Completed" lists with badge counts, sorted by deadline (overdue highlighted in red); "Me" holds identity info and "My publications".
+- **Open registration**: self-service sign-up from the login page (username 2-32 alphanumerics, password ≥8 chars); admins can still create accounts in the console.
 - **Full audit trail**: every node's assignee and creator, plus a timeline of create/checkout/feedback/appeal/submit/review/termination/equipment events.
 
 ## Quick start (LAN, 3 minutes)
@@ -62,7 +63,7 @@ The APK lands at `android/app/build/outputs/apk/debug/app-debug.apk`; sideload i
 | Next-node creation | The current node's assignee (completer), after approval |
 | Termination rights | Chain initiator (direct) + any node assignee of the chain (needs initiator review) |
 | Visibility | Chain initiator and node creators/assignees of a chain; admins see everything |
-| Accounts | Created by admins only (username + password), no self-registration |
+| Accounts | Self-registration on the login page or admin-created in the console; passwords must be ≥8 chars |
 
 ## Project layout
 
@@ -97,7 +98,7 @@ python test_api.py        # delete data.db and run seed_demo.py first
 
 - Attachments are stored on local disk; max 200MB per video.
 - Notifications are in-app badges with 30s polling; no push notifications yet.
-- Passwords are PBKDF2-hashed; no built-in HTTPS (put behind a reverse proxy in production).
+- Passwords are stored with PBKDF2-SHA256 (600k iterations + per-user salt); login locks for 15 minutes after 5 consecutive failures; no built-in HTTPS — **put behind a reverse proxy in production**, and change default/weak passwords before exposing to the internet.
 
 ## License
 

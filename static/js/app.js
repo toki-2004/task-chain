@@ -13,7 +13,11 @@ async function api(method, url, body, isForm) {
   const resp = await fetch(url, opts);
   if (resp.status === 401 && !url.includes("/api/login")) {
     ME = null;
-    location.hash = "#/login";
+    const h = location.hash || "#/home";
+    // 登录/注册页本身或 render 的会话探测不应触发跳转
+    if (!url.includes("/api/me") && h !== "#/login" && h !== "#/register") {
+      location.hash = "#/login";
+    }
     throw new Error("未登录");
   }
   let data = null;
@@ -176,7 +180,10 @@ function renderLogin(app) {
     <div class="form-item"><input id="lg-user" placeholder="账号" autocapitalize="off"></div>
     <div class="form-item"><input id="lg-pass" type="password" placeholder="密码"></div>
     <button class="btn block" id="lg-btn">登 录</button>
-    <div style="text-align:center;color:var(--grey);font-size:12px;margin-top:22px">服务器：${esc(location.host)}</div>
+    <div style="text-align:center;margin-top:14px;font-size:13.5px">
+      没有账号？<a href="#/register">注册新账号</a>
+    </div>
+    <div style="text-align:center;color:var(--grey);font-size:12px;margin-top:18px">服务器：${esc(location.host)}</div>
   </div>`;
   const doLogin = async () => {
     const u = document.getElementById("lg-user").value.trim();
@@ -191,6 +198,40 @@ function renderLogin(app) {
   };
   document.getElementById("lg-btn").onclick = doLogin;
   app.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+}
+
+/* ================= 注册页 ================= */
+function renderRegister(app) {
+  app.innerHTML = `<div class="login-wrap">
+    <div class="login-logo">📝</div>
+    <div class="login-title">注册新账号</div>
+    <div class="login-sub">注册后即可登录使用</div>
+    <div class="form-item"><input id="rg-user" placeholder="账号（2-32 位字母/数字/下划线）" autocapitalize="off"></div>
+    <div class="form-item"><input id="rg-name" placeholder="姓名（任务中显示）"></div>
+    <div class="form-item"><input id="rg-pass" type="password" placeholder="密码（至少 8 位）"></div>
+    <div class="form-item"><input id="rg-pass2" type="password" placeholder="确认密码"></div>
+    <button class="btn block" id="rg-btn">注 册</button>
+    <div style="text-align:center;margin-top:14px;font-size:13.5px">
+      已有账号？<a href="#/login">去登录</a>
+    </div>
+    <div style="text-align:center;color:var(--grey);font-size:12px;margin-top:18px">服务器：${esc(location.host)}</div>
+  </div>`;
+  const doRegister = async () => {
+    const u = document.getElementById("rg-user").value.trim();
+    const n = document.getElementById("rg-name").value.trim();
+    const p1 = document.getElementById("rg-pass").value;
+    const p2 = document.getElementById("rg-pass2").value;
+    if (!u || !n || !p1) return toast("请填写完整", true);
+    if (p1 !== p2) return toast("两次输入的密码不一致", true);
+    try {
+      await api("POST", "/api/register", { username: u, name: n, password: p1 });
+      ME = await GET("/api/me");
+      toast("注册成功，欢迎，" + ME.user.name);
+      location.hash = "#/home";
+    } catch (e) { toast(e.message, true); }
+  };
+  document.getElementById("rg-btn").onclick = doRegister;
+  app.addEventListener("keydown", (e) => { if (e.key === "Enter") doRegister(); });
 }
 
 /* ================= 首页 ================= */
@@ -825,7 +866,7 @@ async function renderMe(app) {
       ${u.is_admin ? `<div class="menu-item" data-go="#/admin"><div class="ico">🛠️</div><div class="label">管理后台</div><div class="val">用户 / 设备 / 总览</div><div class="arrow">›</div></div>` : ""}
       <div class="menu-item" id="mi-logout"><div class="ico">🚪</div><div class="label" style="color:var(--red)">退出登录</div></div>
     </div>
-    <div style="text-align:center;color:var(--grey);font-size:12px;margin-top:10px">协同任务链 v1.0 · 服务器 ${esc(location.host)}</div>
+    <div style="text-align:center;color:var(--grey);font-size:12px;margin-top:10px">协同任务链 v1.1 · 服务器 ${esc(location.host)}</div>
   </div>${tabBar("me")}`;
   bindTabBar(app);
   app.querySelectorAll("[data-go]").forEach((el) => { el.onclick = () => { location.hash = el.dataset.go; }; });
@@ -835,7 +876,7 @@ async function renderMe(app) {
   app.querySelector("#mi-chpwd").onclick = () => modal({
     title: "修改密码", okText: "保存",
     body: `<div class="form-item"><label>原密码</label><input type="password" id="pw-old"></div>
-      <div class="form-item"><label>新密码（至少 4 位）</label><input type="password" id="pw-new"></div>`,
+      <div class="form-item"><label>新密码（至少 8 位）</label><input type="password" id="pw-new"></div>`,
     onOk: async (mask, close) => {
       await POST("/api/me/password", { old: mask.querySelector("#pw-old").value, new: mask.querySelector("#pw-new").value });
       toast("密码已修改"); close();
@@ -912,7 +953,7 @@ async function renderAdmin(app) {
         title: "新增用户", okText: "创建",
         body: `<div class="form-item"><label>账号（字母/数字/下划线）</label><input id="nu-username"></div>
           <div class="form-item"><label>姓名</label><input id="nu-name"></div>
-          <div class="form-item"><label>初始密码（至少 4 位）</label><input id="nu-pass"></div>
+          <div class="form-item"><label>初始密码（至少 8 位）</label><input id="nu-pass"></div>
           <div class="form-item"><label><input type="checkbox" id="nu-admin" style="width:auto"> 设为管理员</label></div>`,
         onOk: async (mask, close) => {
           await POST("/api/admin/users", {
@@ -927,7 +968,7 @@ async function renderAdmin(app) {
       body.querySelectorAll("[data-reset]").forEach((el) => {
         el.onclick = () => modal({
           title: "重置密码", okText: "重置",
-          body: `<div class="form-item"><input id="rp-pass" placeholder="新密码（至少 4 位）"></div>`,
+          body: `<div class="form-item"><input id="rp-pass" placeholder="新密码（至少 8 位）"></div>`,
           onOk: async (mask, close) => {
             await POST(`/api/admin/users/${el.dataset.reset}/reset`, { password: mask.querySelector("#rp-pass").value });
             toast("已重置"); close();
@@ -997,6 +1038,7 @@ async function renderAdmin(app) {
 /* ================= 路由 ================= */
 const routes = [
   [/^#\/login$/, (a) => renderLogin(a)],
+  [/^#\/register$/, (a) => renderRegister(a)],
   [/^#\/home$/, (a) => renderHome(a)],
   [/^#\/create(\?[^#]*)?$/, (a) => renderCreate(a)],
   [/^#\/node\/(\d+)$/, (a, m) => renderNode(a, +m[1])],
@@ -1015,8 +1057,8 @@ async function render() {
   if (!ME) {
     try { ME = await GET("/api/me"); } catch (e) { ME = null; }
   }
-  if (!ME && hash !== "#/login") { location.hash = "#/login"; return; }
-  if (ME && hash === "#/login") { location.hash = "#/home"; return; }
+  if (!ME && hash !== "#/login" && hash !== "#/register") { location.hash = "#/login"; return; }
+  if (ME && (hash === "#/login" || hash === "#/register")) { location.hash = "#/home"; return; }
   for (const [re, fn] of routes) {
     const m = hash.match(re);
     if (m) {

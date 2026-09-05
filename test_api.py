@@ -53,9 +53,24 @@ def main():
     # ---- 管理员：注册新设备/新用户 ----
     r = admin.post(f"{BASE}/api/admin/devices", json={"name": "测试仪-03", "code": "TST-003"})
     check("管理员注册设备", r.ok, r.text)
-    r = admin.post(f"{BASE}/api/admin/users", json={"username": "testu", "name": "测试员", "password": "123456"})
+    r = admin.post(f"{BASE}/api/admin/users", json={"username": "testu", "name": "测试员", "password": "testu12345"})
     check("管理员建用户", r.ok, r.text)
-    tu = login("testu")
+    r = admin.post(f"{BASE}/api/admin/users", json={"username": "weakpw", "name": "弱密码", "password": "1234"})
+    check("管理员建用户弱密码被拒", r.status_code == 400, r.text)
+    tu = login("testu", "testu12345")
+
+    # ---- 开放注册 ----
+    s = requests.Session()
+    r = s.post(f"{BASE}/api/register", json={"username": "newguy", "name": "新用户", "password": "register8"})
+    check("自助注册成功并自动登录", r.ok and s.get(f"{BASE}/api/me").json()["user"]["name"] == "新用户", r.text)
+    r = requests.post(f"{BASE}/api/register", json={"username": "newguy", "name": "重复", "password": "register8"})
+    check("重复账号被拒", r.status_code == 400, r.text)
+    r = requests.post(f"{BASE}/api/register", json={"username": "shortpw", "name": "短", "password": "a1b2c3"})
+    check("短密码注册被拒", r.status_code == 400, r.text)
+    r = requests.post(f"{BASE}/api/register", json={"username": "非法-名", "name": "x", "password": "a1b2c3d4"})
+    check("非法用户名被拒", r.status_code == 400, r.text)
+    r = requests.post(f"{BASE}/api/login", json={"username": "newguy", "password": "register8"})
+    check("注册用户可登录", r.ok, r.text)
 
     # ---- 发布任务（带设备前置 + 截止时间）----
     r = zs.post(f"{BASE}/api/tasks", json={
@@ -239,6 +254,18 @@ def main():
         for b in ["unfinished", "pending", "done"]:
             r = s.get(f"{BASE}/api/tasks?bucket={b}")
             check(f"{name} 列表 {b}", r.ok, r.text)
+
+    # 登录防爆破（放在最后：锁的是不存在的用户名，不影响其他用例）
+    for i in range(5):
+        requests.post(f"{BASE}/api/login", json={"username": "bruteforce_x", "password": "wrong"})
+    r = requests.post(f"{BASE}/api/login", json={"username": "bruteforce_x", "password": "whatever"})
+    check("5 次失败后触发限流 429", r.status_code == 429, f"got {r.status_code}")
+
+    # 旧版弱密码兼容（v1 哈希自动升级）：zhangsan/123456 仍可登录且升级后再登录正常
+    r = requests.post(f"{BASE}/api/login", json={"username": "zhangsan", "password": "123456"})
+    check("旧密码兼容登录", r.ok, r.text)
+    r = requests.post(f"{BASE}/api/login", json={"username": "zhangsan", "password": "123456"})
+    check("哈希升级后再登录", r.ok, r.text)
 
     print()
     if FAILED:

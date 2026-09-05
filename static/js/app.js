@@ -943,13 +943,23 @@ async function renderAdmin(app) {
     if (tab === "users") {
       const users = await GET("/api/admin/users");
       body.innerHTML = `<button class="btn block" id="add-user" style="margin-bottom:10px">＋ 新增用户</button>` +
-        users.map((u) => `<div class="card" style="display:flex;align-items:center;gap:10px">
-          <div style="flex:1"><b>${esc(u.name)}</b> ${u.is_admin ? '<span class="chip orange">管理员</span>' : ""}
-            <div style="font-size:12px;color:var(--muted)">${esc(u.username)} · ${u.active ? "正常" : "已停用"}</div></div>
-          <button class="btn plain small" data-reset="${u.id}">重置密码</button>
-          ${u.is_admin ? "" : `<button class="btn ${u.active ? "danger" : "green"} small" data-toggle="${u.id}" data-active="${u.active}">${u.active ? "停用" : "启用"}</button>
-          <button class="btn plain small" data-deluser="${u.id}" style="color:var(--red)">删除</button>`}
-        </div>`).join("");
+        users.map((u) => {
+          const isSelf = u.id === ME.user.id;
+          const isAdmin = !!u.is_admin;
+          let btns = `<button class="btn plain small" data-reset="${u.id}">重置密码</button>`;
+          if (!isAdmin) {
+            btns += `<button class="btn ${u.active ? "danger" : "green"} small" data-toggle="${u.id}" data-active="${u.active}">${u.active ? "停用" : "启用"}</button>
+              <button class="btn plain small" data-promote="${u.id}">设为管理员</button>
+              <button class="btn plain small" data-deluser="${u.id}" style="color:var(--red)">删除</button>`;
+          } else if (u.username !== "admin" && !isSelf) {
+            btns += `<button class="btn plain small" data-demote="${u.id}" style="color:var(--orange)">降权</button>`;
+          }
+          return `<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:120px"><b>${esc(u.name)}</b> ${isAdmin ? '<span class="chip orange">管理员</span>' : ""}
+            <div style="font-size:12px;color:var(--muted)">${esc(u.username)} · ${u.active ? "正常" : "已停用"}${isSelf ? " · 我" : ""}</div></div>
+          ${btns}
+        </div>`;
+        }).join("");
       body.querySelector("#add-user").onclick = () => modal({
         title: "新增用户", okText: "创建",
         body: `<div class="form-item"><label>账号（字母/数字/下划线）</label><input id="nu-username"></div>
@@ -983,6 +993,26 @@ async function renderAdmin(app) {
             load();
           } catch (e) { toast(e.message, true); }
         };
+      });
+      body.querySelectorAll("[data-demote]").forEach((el) => {
+        el.onclick = () => confirmModal("降权",
+          "取消该用户的管理员身份，账号保留为普通成员。确定降权？",
+          "降权", "warn", async () => {
+            try {
+              await POST(`/api/admin/users/${el.dataset.demote}/demote`);
+              toast("已降权为普通成员"); load();
+            } catch (e) { toast(e.message, true); }
+          });
+      });
+      body.querySelectorAll("[data-promote]").forEach((el) => {
+        el.onclick = () => confirmModal("设为管理员",
+          "该用户将可以进入管理后台管理用户、设备与任务。确定设为管理员？",
+          "设为管理员", "green", async () => {
+            try {
+              await POST(`/api/admin/users/${el.dataset.promote}/promote`);
+              toast("已设为管理员"); load();
+            } catch (e) { toast(e.message, true); }
+          });
       });
       body.querySelectorAll("[data-deluser]").forEach((el) => {
         el.onclick = () => confirmModal("删除用户",

@@ -308,6 +308,41 @@ def admin_toggle_user(uid: int, body: ActiveBody, request: Request):
     return {"ok": True}
 
 
+@app.post("/api/admin/users/{uid}/demote")
+def admin_demote_user(uid: int, request: Request):
+    """降权：取消管理员身份、账号保留为普通成员。
+
+    admin 引导账号不可降权；不能对自己的账号降权（防误操作）。
+    """
+    admin = require_admin(request)
+    if uid == admin["id"]:
+        raise HTTPException(400, "不能对自己的账号降权")
+    with db_ctx() as db:
+        target = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if not target:
+            raise HTTPException(404, "用户不存在")
+        if not target["is_admin"]:
+            raise HTTPException(400, "该用户不是管理员")
+        if target["username"] == "admin":
+            raise HTTPException(400, "admin 账号不可被降权")
+        db.execute("UPDATE users SET is_admin=0 WHERE id=?", (uid,))
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/{uid}/promote")
+def admin_promote_user(uid: int, request: Request):
+    """升权：把普通用户设为管理员。"""
+    require_admin(request)
+    with db_ctx() as db:
+        target = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if not target:
+            raise HTTPException(404, "用户不存在")
+        if target["is_admin"]:
+            raise HTTPException(400, "该用户已是管理员")
+        db.execute("UPDATE users SET is_admin=1 WHERE id=?", (uid,))
+    return {"ok": True}
+
+
 @app.delete("/api/admin/users/{uid}")
 def admin_del_user(uid: int, request: Request):
     """删除用户：参与过任务（发起/创建/受任过节点）的不可删，只能停用，保证全流程留痕完整。

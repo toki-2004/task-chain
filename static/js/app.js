@@ -427,20 +427,30 @@ async function renderCreate(app) {
     if (!others.length) return toast("暂无可选的前置任务（你参与过的任务链中暂无其他任务）", true);
     modal({
       title: "选择前置任务", okText: "关闭", showCancel: false,
-      body: others.map((n) => `<div class="pick-item" data-pick="${n.id}">
-        <div class="t">${esc(n.chain_title)} · 节点${n.seq}：${esc(n.title)}</div>
-        <div class="s">受任人：${esc(n.assignee_name)} · 状态：${STATUS_MAP[n.status] ? STATUS_MAP[n.status].t : n.status}</div>
-      </div>`).join(""),
+      body: `<input id="pick-search" placeholder="🔍 搜索：任务名 / 链名 / 受任人" style="margin-bottom:8px" autofocus>
+             <div id="pick-list"></div>`,
       onOk: async (mask, close) => close(),
     });
-    document.querySelectorAll(".pick-item").forEach((el) => {
-      el.onclick = () => {
-        const n = others.find((x) => x.id === +el.dataset.pick);
-        prereqs.push({ type: "task", ref_node_id: n.id, label: `${n.chain_title} · 节点${n.seq}`, sub: n.title, penalty_text: "", penalty_url: "" });
-        drawPrereqs();
-        document.querySelector(".modal-mask").remove();
-      };
-    });
+    const drawPickList = (kw) => {
+      const k = (kw || "").trim().toLowerCase();
+      const list = others.filter((n) => !k || [n.chain_title, n.title, n.assignee_name]
+        .some((v) => (v || "").toLowerCase().includes(k)));
+      const box = document.getElementById("pick-list");
+      box.innerHTML = list.length ? list.map((n) => `<div class="pick-item" data-pick="${n.id}">
+        <div class="t">${esc(n.chain_title)} · 节点${n.seq}：${esc(n.title)}</div>
+        <div class="s">受任人：${esc(n.assignee_name)} · 状态：${STATUS_MAP[n.status] ? STATUS_MAP[n.status].t : n.status}</div>
+      </div>`).join("") : `<div style="color:var(--grey);font-size:13px;padding:10px 0">无匹配任务</div>`;
+      box.querySelectorAll(".pick-item").forEach((el) => {
+        el.onclick = () => {
+          const n = others.find((x) => x.id === +el.dataset.pick);
+          prereqs.push({ type: "task", ref_node_id: n.id, label: `${n.chain_title} · 节点${n.seq}`, sub: n.title, penalty_text: "", penalty_url: "" });
+          drawPrereqs();
+          document.querySelector(".modal-mask").remove();
+        };
+      });
+    };
+    drawPickList("");
+    document.getElementById("pick-search").oninput = (e) => drawPickList(e.target.value);
   };
 
   app.querySelector("#add-dev-pre").onclick = () => {
@@ -1259,6 +1269,10 @@ async function renderAdmin(app) {
         </div>
         <div id="ac-qrbox" style="text-align:center;margin-top:12px"></div>
       </div>`;
+      const distInfo = await GET("/apk/info").catch(() => ({version: "", available: false}));
+      if (distInfo.available) {
+        card.insertAdjacentHTML("beforeend", `<div style="font-size:12px;color:var(--muted);margin-top:10px">📦 服务器当前分发的 APK：v${esc((distInfo.version || "").replace("v", ""))}（公开下载地址 ${esc(location.origin)}/apk）</div>`);
+      }
       body.querySelector("#ac-save").onclick = async () => {
         try {
           const r = await api("PUT", "/api/admin/appconfig", { app_server_url: body.querySelector("#ac-url").value.trim() });

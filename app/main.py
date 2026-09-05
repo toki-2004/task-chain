@@ -1688,6 +1688,97 @@ def admin_del_chain(chain_id: int, request: Request):
     return {"ok": True, "deleted_nodes": len(node_ids)}
 
 
+# ---------------------------------------------------------------- APK 分发（服务器自分发，手机无需访问 GitHub）
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIST_DIR = os.path.join(BASE_DIR, "dist")
+APK_FILE = os.path.join(DIST_DIR, "task-chain.apk")
+APK_VER_FILE = os.path.join(DIST_DIR, "version.txt")
+os.makedirs(DIST_DIR, exist_ok=True)
+
+
+def _dist_version():
+    try:
+        with open(APK_VER_FILE, encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _apk_dist_info():
+    ver = _dist_version()
+    size = os.path.getsize(APK_FILE) if os.path.exists(APK_FILE) else 0
+    return {"version": ver, "size": size, "available": os.path.exists(APK_FILE) and size > 0}
+
+
+@app.get("/apk/info")
+def apk_info():
+    """公开：查询服务器当前分发的 APK 版本（供 APK 端检查更新）。"""
+    return _apk_dist_info()
+
+
+@app.get("/apk")
+def apk_download():
+    """公开：下载服务器分发的 APK（安装前无账号也可下载）。"""
+    info = _apk_dist_info()
+    if not info["available"]:
+        raise HTTPException(404, "服务器尚未放置 APK 安装包")
+    ver = info["version"] or "unknown"
+    return FileResponse(
+        APK_FILE,
+        media_type="application/vnd.android.package-archive",
+        filename=f"task-chain-{ver}.apk",
+    )
+
+
+def _version_gt(a, b):
+    """版本号比较：v1.10.0 > v1.9.2，逐段数字比较。"""
+    def parts(v):
+        return [int(x) if x.isdigit() else 0 for x in str(v).strip().lstrip("vV").split(".")]
+    pa, pb = parts(a), parts(b)
+    n = max(len(pa), len(pb))
+    pa += [0] * (n - len(pa))
+    pb += [0] * (n - len(pb))
+    return pa > pb
+
+
+def _start_apk_sync():
+    """启动时从 GitHub Releases 拉取最新 APK 到 dist/（仅当 GitHub 版本更新；
+    失败保留现有包——手机更新走服务器分发，不依赖 GitHub 可达）。"""
+
+    import urllib.request
+
+    def sync():
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/toki-2004/task-chain/releases/latest",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "task-chain-server"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            tag = str(data.get("tag_name", "")).strip()
+            apk_url = ""
+            for a in data.get("assets", []):
+                if str(a.get("name", "")).endswith(".apk"):
+                    apk_url = str(a.get("browser_download_url", ""))
+                    break
+            cur = _dist_version()
+            if not tag or not apk_url or not _version_gt(tag, cur):
+                return  # GitHub 无更新（或本地 dist 已是更新版本）
+            with urllib.request.urlopen(apk_url, timeout=120) as r:
+                blob = r.read()
+            tmp = APK_FILE + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(blob)
+            os.replace(tmp, APK_FILE)
+            with open(APK_VER_FILE, "w", encoding="utf-8") as f:
+                f.write(tag)
+            print(f"[apk-sync] dist updated to {tag} ({len(blob)} bytes)")
+        except Exception as e:
+            print(f"[apk-sync] GitHub sync skipped: {e}")
+
+    threading.Thread(target=sync, daemon=True, name="apk-sync").start()
+
+
 # ---------------------------------------------------------------- startup & static
 
 @app.on_event("startup")
@@ -1699,6 +1790,7 @@ def startup():
                        ("admin", hash_password("admin123"), "管理员"))
             print("[init] created default admin account: admin / admin123")
     _start_discovery_responder()
+    _start_apk_sync()
 
 
 # ---------------------------------------------------------------- LAN discovery (APK 零配置)

@@ -35,7 +35,7 @@ Works as a web app (usable directly in the phone browser, nothing to install) an
 
 ## Quick start (LAN, 3 minutes)
 
-1. On the PC, double-click `start_server.bat` (first run creates a venv and installs deps; requires Python 3.10+).
+1. On the PC, double-click `start_server.bat` (a console window opens showing the URL and QR code; first run creates a venv and installs deps; requires Python 3.10+). To stop, double-click `stop_server.bat` or just close that window.
 2. The default admin account is created automatically: **admin / admin123** (change it right away).
 3. Log in as admin → "Me → Admin console" → register equipment, create user accounts.
 4. On the phone (same Wi-Fi), open the LAN URL shown in the server window (a QR code is printed too), or install the Android app and enter the same address on first launch.

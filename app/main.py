@@ -1731,52 +1731,20 @@ def apk_download():
     )
 
 
-def _version_gt(a, b):
-    """版本号比较：v1.10.0 > v1.9.2，逐段数字比较。"""
-    def parts(v):
-        return [int(x) if x.isdigit() else 0 for x in str(v).strip().lstrip("vV").split(".")]
-    pa, pb = parts(a), parts(b)
-    n = max(len(pa), len(pb))
-    pa += [0] * (n - len(pa))
-    pb += [0] * (n - len(pb))
-    return pa > pb
-
-
-def _start_apk_sync():
-    """启动时从 GitHub Releases 拉取最新 APK 到 dist/（仅当 GitHub 版本更新；
-    失败保留现有包——手机更新走服务器分发，不依赖 GitHub 可达）。"""
-
-    import urllib.request
-
-    def sync():
-        try:
-            req = urllib.request.Request(
-                "https://api.github.com/repos/toki-2004/task-chain/releases/latest",
-                headers={"Accept": "application/vnd.github+json", "User-Agent": "task-chain-server"})
-            with urllib.request.urlopen(req, timeout=15) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            tag = str(data.get("tag_name", "")).strip()
-            apk_url = ""
-            for a in data.get("assets", []):
-                if str(a.get("name", "")).endswith(".apk"):
-                    apk_url = str(a.get("browser_download_url", ""))
-                    break
-            cur = _dist_version()
-            if not tag or not apk_url or not _version_gt(tag, cur):
-                return  # GitHub 无更新（或本地 dist 已是更新版本）
-            with urllib.request.urlopen(apk_url, timeout=120) as r:
-                blob = r.read()
-            tmp = APK_FILE + ".tmp"
-            with open(tmp, "wb") as f:
-                f.write(blob)
-            os.replace(tmp, APK_FILE)
-            with open(APK_VER_FILE, "w", encoding="utf-8") as f:
-                f.write(tag)
-            print(f"[apk-sync] dist updated to {tag} ({len(blob)} bytes)")
-        except Exception as e:
-            print(f"[apk-sync] GitHub sync skipped: {e}")
-
-    threading.Thread(target=sync, daemon=True, name="apk-sync").start()
+def _cleanup_dist():
+    """启动时清理分发目录：只保留最新一份 APK 与版本记录，删除旧版本残留。"""
+    keep = {"task-chain.apk", "version.txt"}
+    try:
+        for name in os.listdir(DIST_DIR):
+            if name in keep:
+                continue
+            try:
+                os.remove(os.path.join(DIST_DIR, name))
+                print(f"[dist] removed old file: {name}")
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- startup & static
@@ -1789,8 +1757,8 @@ def startup():
             db.execute("INSERT INTO users(username, password_hash, name, is_admin) VALUES(?,?,?,1)",
                        ("admin", hash_password("admin123"), "管理员"))
             print("[init] created default admin account: admin / admin123")
+    _cleanup_dist()
     _start_discovery_responder()
-    _start_apk_sync()
 
 
 # ---------------------------------------------------------------- LAN discovery (APK 零配置)

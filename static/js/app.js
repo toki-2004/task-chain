@@ -1269,10 +1269,6 @@ async function renderAdmin(app) {
         </div>
         <div id="ac-qrbox" style="text-align:center;margin-top:12px"></div>
       </div>`;
-      const distInfo = await GET("/apk/info").catch(() => ({version: "", available: false}));
-      if (distInfo.available) {
-        card.insertAdjacentHTML("beforeend", `<div style="font-size:12px;color:var(--muted);margin-top:10px">📦 服务器当前分发的 APK：v${esc((distInfo.version || "").replace("v", ""))}（公开下载地址 ${esc(location.origin)}/apk）</div>`);
-      }
       body.querySelector("#ac-save").onclick = async () => {
         try {
           const r = await api("PUT", "/api/admin/appconfig", { app_server_url: body.querySelector("#ac-url").value.trim() });
@@ -1290,7 +1286,10 @@ async function renderAdmin(app) {
       }
       /* 固定入口（Gitee raw 指针） */
       const es = await GET("/api/admin/entrysync");
-      const card = body.querySelector(".card");
+      const distInfo = await GET("/apk/info").catch(() => ({version: "", available: false}));
+      if (distInfo.available) {
+        card.insertAdjacentHTML("beforeend", `<div style="font-size:12px;color:var(--muted);margin-top:10px">📦 服务器当前分发的 APK：v${esc((distInfo.version || "").replace("v", ""))}（公开下载地址 ${esc(location.origin)}/apk）</div>`);
+      }
       /* 救援邮箱（frp 地址变更自动发信，APK 失联时 POP3 自救） */
       const rm = await GET("/api/admin/rescuemail");
       card.insertAdjacentHTML("afterend", `<div class="card">

@@ -4,10 +4,15 @@ import android.app.Activity;
 import android.app.AlarmManager;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
@@ -92,6 +97,15 @@ public class MainActivity extends Activity {
     };
     /** 本次加载是否已见分晓（完成/报错），防止超时与回调重复自救 */
     private volatile boolean loadSettled = true;
+    /** 网络变化后的局域网探测（防抖 + 去重） */
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private volatile boolean lanProbeRunning = false;
+    private final Runnable lanProbeTask = new Runnable() {
+        @Override
+        public void run() {
+            probeLanAndSwitch();
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -261,6 +275,7 @@ public class MainActivity extends Activity {
         } else {
             loadServerUrl(serverUrl);
         }
+        registerNetworkWatcher(); // 每次网络变化自动探测局域网，进入局域网范围即优先切回
         startNotifyService();
         checkForUpdate(false); // 启动静默检查新版本
     }
@@ -420,6 +435,24 @@ public class MainActivity extends Activity {
         super.onStop();
         // 切到后台时立即检查一次，之后由系统闹钟约 15 分钟一次
         new Thread(() -> NotifyPoller.poll(this)).start();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        mainHandler.removeCallbacks(loadTimeoutTask);
+        mainHandler.removeCallbacks(lanProbeTask);
+        if (networkCallback != null) {
+            try {
+                ConnectivityManager cm =
+                        (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    cm.unregisterNetworkCallback(networkCallback);
+                }
+            } catch (Exception ignored) {
+            }
+            networkCallback = null;
+        }
     }
 
     @Override
@@ -864,30 +897,84 @@ public class MainActivity extends Activity {
 
     /** 页面加载完成后的地址策略（方向不对称）：
      *  当前走公网 → 静默探测局域网，发现直连地址立即切回（局域网更快、不占隧道流量）；
-     *  当前走局域网 → 保持（官方地址已由 onPageFinished 存档备用，不被拉回公网）。 */
+     *  当前走局域网 → 保持（官方地址已由 onPageFinished 存档备用，不被拉回公网）。
+     *  网络变化也会主动探测（见 registerNetworkWatcher），进入局域网范围即切回。 */
     private void postLoadChecks(String url) {
         if (isLanAddress(url)) {
             return; // 局域网直连优先：不被拉回公网官方地址
         }
+        probeLanAndSwitch();
+    }
+
+    /** 执行一次局域网探测：发现可用局域网地址且不同于当前 → 立即切回；没发现 → 保持现状。
+     *  供页面加载完成后的公网站点与每次网络变化（防抖见 lanProbeTask）复用。 */
+    private void probeLanAndSwitch() {
+        if (lanProbeRunning) {
+            return;
+        }
+        lanProbeRunning = true;
         new Thread(() -> {
-            final String lan = udpDiscover();
-            runOnUiThread(() -> {
-                if (lan != null && !lan.isEmpty() && !lan.equals(serverUrl)
-                        && lan.startsWith("http")) {
-                    // 家里 WiFi 可直连：公网发现局域网 → 立即切回（更快、不占隧道流量）
-                    if (!autoSwitchAllowed()) {
-                        return;
+            try {
+                final String lan = udpDiscover();
+                runOnUiThread(() -> {
+                    if (lan != null && !lan.isEmpty() && !lan.equals(serverUrl)
+                            && lan.startsWith("http")) {
+                        // 家里 WiFi 可直连：切回局域网（更快、不占隧道流量）
+                        if (!autoSwitchAllowed()) {
+                            return;
+                        }
+                        markSwitch();
+                        serverUrl = lan;
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                .putString(KEY_SERVER, lan).apply();
+                        Toast.makeText(MainActivity.this, "已切换到局域网直连：" + lan,
+                                Toast.LENGTH_SHORT).show();
+                        loadServerUrl(lan);
                     }
-                    markSwitch();
-                    serverUrl = lan;
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                            .putString(KEY_SERVER, lan).apply();
-                    Toast.makeText(MainActivity.this, "已切换到局域网直连：" + lan, Toast.LENGTH_SHORT).show();
-                    loadServerUrl(lan);
-                    return;
-                }
-            });
+                });
+            } finally {
+                lanProbeRunning = false;
+            }
         }).start();
+    }
+
+    /** 监听网络变化：每次进入/切换网络（WiFi、蜂窝等）自动探测一次局域网。
+     *  发现局域网服务器 → 立即切回（进入局域网范围即优先局域网）；没有 → 保持当前地址。 */
+    private void registerNetworkWatcher() {
+        try {
+            ConnectivityManager cm =
+                    (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                return;
+            }
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    scheduleLanProbe();
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    scheduleLanProbe();
+                }
+
+                @Override
+                public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+                    scheduleLanProbe();
+                }
+            };
+            NetworkRequest req = new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build();
+            cm.registerNetworkCallback(req, networkCallback);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void scheduleLanProbe() {
+        // 网络事件可能连发（可用/能力变化等），统一防抖后只探测一次
+        mainHandler.removeCallbacks(lanProbeTask);
+        mainHandler.postDelayed(lanProbeTask, 1200);
     }
 
     /** 失联自救最后一环：登录救援邮箱（POP3）读最新邮件里的服务器地址。静默失败。 */

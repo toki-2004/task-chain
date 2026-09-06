@@ -61,6 +61,7 @@ public class MainActivity extends Activity {
     private static final String KEY_SERVER = "server_url";
     private static final String KEY_ENTRY = "entry_url";
     private static final String KEY_OFFICIAL = "official_url";
+    private static final String KEY_SESSION = "sid_token";
     private static final String KEY_RESCUE_USER = "rescue_user";
     private static final String KEY_RESCUE_TOKEN = "rescue_token";
     private static final String KEY_RESCUE_POP = "rescue_pop_host";
@@ -103,7 +104,7 @@ public class MainActivity extends Activity {
     private final Runnable lanProbeTask = new Runnable() {
         @Override
         public void run() {
-            probeLanAndSwitch();
+            probeLanAndSwitch(true); // 网络变化触发的探测：弹提示让用户知道正在尝试
         }
     };
 
@@ -191,6 +192,7 @@ public class MainActivity extends Activity {
                     lanRetryCount = 0;
                 }
                 if (!mainFrameLoadFailed && !serverUrl.isEmpty()) {
+                    ensureSession(serverUrl); // 捕获/补种登录会话
                     archiveOfficialUrl(); // 每次连接成功：把官方外网地址存档到本地备用
                 }
                 postLoadChecks(url); // 局域网直连优先，其次跟随官方地址
@@ -267,7 +269,6 @@ public class MainActivity extends Activity {
         if (serverUrl.isEmpty()) {
             // 全新启动：局域网 UDP 自动发现 → 内置默认入口 → 固定入口 → 救援邮箱 → 手动输入
             showLoading(true);
-            Toast.makeText(this, "正在局域网搜索服务器…", Toast.LENGTH_SHORT).show();
             discoverOnLan(true);
         } else if (getIntent() != null && getIntent().getBooleanExtra("taskchain_push", false)) {
             loadServerUrl(serverUrl);
@@ -373,6 +374,7 @@ public class MainActivity extends Activity {
         }
         serverUrl = url;
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_SERVER, url).apply();
+        ensureSession(url); // 切换地址后自动补种登录会话，避免每次重新登录
         showLoading(true);
         webView.loadUrl(url);
     }
@@ -397,6 +399,49 @@ public class MainActivity extends Activity {
             url = "https://" + url.substring(7);
         }
         return url;
+    }
+
+    /** 登录态跨地址保持：WebView 的会话 cookie 按域名存，局域网/外网切换后新域名
+     *  没有 cookie 就得重新登录。这里把 sid 会话 token 单独存一份（服务端会话与域名无关），
+     *  每次加载前检查：目标地址有 sid 则顺带刷新存档；没有且本地有存档则重新种入。 */
+    private String cookieSid(String url) {
+        try {
+            String c = CookieManager.getInstance().getCookie(url);
+            if (c == null) {
+                return "";
+            }
+            for (String part : c.split(";")) {
+                String p = part.trim();
+                if (p.startsWith("sid=")) {
+                    return p.substring(4);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
+    }
+
+    private void ensureSession(String url) {
+        if (url == null || url.isEmpty()) {
+            return;
+        }
+        try {
+            SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+            String current = cookieSid(url);
+            String saved = sp.getString(KEY_SESSION, "");
+            if (!current.isEmpty()) {
+                if (!current.equals(saved)) {
+                    sp.edit().putString(KEY_SESSION, current).apply();
+                }
+                return;
+            }
+            if (!saved.isEmpty()) {
+                CookieManager.getInstance().setCookie(url,
+                        "sid=" + saved + "; path=/; max-age=" + (30L * 24 * 3600));
+                CookieManager.getInstance().flush();
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     /** 系统通知权限（API 33+ 需运行时申请）+ 注册后台闹钟检查（约 15 分钟一次，无常驻图标）。 */
@@ -595,6 +640,7 @@ public class MainActivity extends Activity {
     /** 看门狗兜底：请求当前服务器 /api/appconfig 拿官方（外网）地址并立即切换；
      *  当前服务器也要不到时，再走固定入口 → 救援邮箱 → 常规失联链。 */
     private void fetchOfficialAndSwitch() {
+        Toast.makeText(this, "正在获取官方外网地址…", Toast.LENGTH_SHORT).show();
         final String current = serverUrl;
         if (current.isEmpty()) {
             discoverOnLan(false);
@@ -752,6 +798,7 @@ public class MainActivity extends Activity {
 
     /** 局域网 UDP 自动发现：广播问询，服务器应答 "TASKCHAIN_SERVER|http://ip:port"。 */
     private void discoverOnLan(final boolean onFailAsk) {
+        Toast.makeText(this, "正在局域网搜索服务器…", Toast.LENGTH_SHORT).show();
         final boolean wasLan = isLanAddress(serverUrl); // 调用方均为主线程：此刻若在局域网，说明它刚加载失败
         new Thread(() -> {
             String result = udpDiscover();
@@ -903,14 +950,17 @@ public class MainActivity extends Activity {
         if (isLanAddress(url)) {
             return; // 局域网直连优先：不被拉回公网官方地址
         }
-        probeLanAndSwitch();
+        probeLanAndSwitch(false); // 正常页面加载后的例行探测保持静默
     }
 
     /** 执行一次局域网探测：发现可用局域网地址且不同于当前 → 立即切回；没发现 → 保持现状。
-     *  供页面加载完成后的公网站点与每次网络变化（防抖见 lanProbeTask）复用。 */
-    private void probeLanAndSwitch() {
+     *  供页面加载完成后的公网站点（静默）与网络变化（hint=true 弹提示）复用。 */
+    private void probeLanAndSwitch(final boolean hint) {
         if (lanProbeRunning) {
             return;
+        }
+        if (hint) {
+            Toast.makeText(this, "正在局域网搜索服务器…", Toast.LENGTH_SHORT).show();
         }
         lanProbeRunning = true;
         new Thread(() -> {
@@ -1172,6 +1222,8 @@ public class MainActivity extends Activity {
         } else if (item.getItemId() == 2) {
             CookieManager.getInstance().removeAllCookies(null);
             CookieManager.getInstance().flush();
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .remove(KEY_SESSION).apply(); // 清除登录状态也要清掉本地会话存档
             loadServerUrl(serverUrl);
             return true;
         } else if (item.getItemId() == 3) {

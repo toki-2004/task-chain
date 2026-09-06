@@ -175,6 +175,10 @@ function taskCard(t, opts = {}) {
 }
 
 async function refreshMe() {
+  // 本标签页刚主动退出：不再用共享 cookie 自动登回（cookie 可能属于其他标签页的账号）
+  if (!sessionStorage.getItem("tc_sid") && sessionStorage.getItem("tc_logged_out") === "1") {
+    return;
+  }
   try {
     const r = await GET("/api/me");
     // /api/me 返回当前会话 token：自动认领为本标签页会话，
@@ -205,6 +209,7 @@ function renderLogin(app) {
     try {
       const r = await api("POST", "/api/login", { username: u, password: p });
       if (r && r.token) sessionStorage.setItem("tc_sid", r.token);
+      sessionStorage.removeItem("tc_logged_out");
       ME = await GET("/api/me");
       toast("欢迎，" + ME.user.name);
       location.hash = "#/home";
@@ -243,6 +248,7 @@ function renderRegister(app) {
     try {
       const r = await api("POST", "/api/register", { username: u, name: n, password: p1 });
       if (r && r.token) sessionStorage.setItem("tc_sid", r.token);
+      sessionStorage.removeItem("tc_logged_out");
       ME = await GET("/api/me");
       toast("注册成功，欢迎，" + ME.user.name);
       location.hash = "#/home";
@@ -1088,7 +1094,8 @@ async function renderMe(app) {
   bindTabBar(app);
   app.querySelectorAll("[data-go]").forEach((el) => { el.onclick = () => { location.hash = el.dataset.go; }; });
   app.querySelector("#mi-logout").onclick = async () => {
-    await POST("/api/logout"); sessionStorage.removeItem("tc_sid"); ME = null; location.hash = "#/login";
+    await POST("/api/logout"); sessionStorage.removeItem("tc_sid");
+    sessionStorage.setItem("tc_logged_out", "1"); ME = null; location.hash = "#/login";
   };
   app.querySelector("#mi-chpwd").onclick = () => modal({
     title: "修改密码", okText: "保存",

@@ -187,14 +187,24 @@ def logout(request: Request):
     if token:
         drop_session(token)
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie("sid", path="/")
+    header = request.headers.get("X-Session")
+    cookie = request.cookies.get("sid")
+    # 仅当本标签页登出的就是共享 cookie 对应的会话时才清 cookie；
+    # 克隆会话登出不影响其他标签页的共享 cookie 登录态
+    if not header or not cookie or header == cookie:
+        resp.delete_cookie("sid", path="/")
     return resp
 
 
 @app.get("/api/me")
 def me(request: Request):
     user = require_user(request)
+    had_header = bool(request.headers.get("X-Session"))
     token = _session_token(request)
+    if not had_header:
+        # 共享 cookie 自动登录的标签页：克隆一条本标签页独立会话，
+        # 避免该标签页退出/换号时删掉其他标签页共用 cookie 的会话
+        token = new_session(user["id"])
     db = get_db()
     unfinished = db.execute(
         "SELECT COUNT(*) c FROM nodes n JOIN chains c2 ON c2.id=n.chain_id "

@@ -519,8 +519,20 @@ def main():
     s3 = requests.Session()
     r3 = s3.post(f"{BASE}/api/login", json={"username": "wangwu", "password": "123456"})
     m3 = s3.get(f"{BASE}/api/me").json()
-    check("/api/me 返回当前会话 token（cookie 标签页可认领）",
-          m3.get("token") == r3.json().get("token"), f"{m3.get('token','')} vs {r3.json().get('token','')}")
+    check("/api/me 为 cookie 标签页克隆独立会话（可认领）",
+          bool(m3.get("token")) and m3.get("token") != r3.json().get("token"),
+          f"{m3.get('token','')} vs {r3.json().get('token','')}")
+    s4 = requests.Session()
+    s4.post(f"{BASE}/api/login", json={"username": "zhangsan", "password": "123456"})
+    cookie_tok = s4.cookies.get("sid", "")
+    m4 = s4.get(f"{BASE}/api/me").json()
+    clone_tok = m4.get("token", "")
+    check("cookie 自动登录被克隆为独立会话", bool(clone_tok) and clone_tok != cookie_tok,
+          f"{clone_tok} vs {cookie_tok}")
+    rr = requests.post(f"{BASE}/api/logout", headers={"X-Session": clone_tok})
+    check("克隆会话登出不删共享 cookie", rr.ok and "sid" in s4.cookies, rr.text[:100])
+    rr = requests.get(f"{BASE}/api/me", cookies={"sid": cookie_tok})
+    check("原 cookie 会话（其他标签页）仍有效", rr.ok, rr.text[:100])
 
     # 登录防爆破（放在最后：锁的是不存在的用户名，不影响其他用例）
     for i in range(5):

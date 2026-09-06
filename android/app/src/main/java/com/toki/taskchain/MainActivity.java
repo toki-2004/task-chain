@@ -79,6 +79,8 @@ public class MainActivity extends Activity {
     private volatile boolean mainFrameLoadFailed = false;
     /** 局域网地址连续原地重试次数：超过上限才允许切公网自救，避免局域网抖动反复横跳 */
     private int lanRetryCount = 0;
+    /** 本地存档外网地址的连续重试次数：偶发失败先原地重试一次，仍失败才走救援邮箱 */
+    private int backupRetry = 0;
     /** 页面加载 5 秒仍未见分晓（未渲染完成也未报错）时，主动切换公网/备用地址 */
     private static final long LOAD_TIMEOUT_MS = 5000;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -167,6 +169,9 @@ public class MainActivity extends Activity {
                 loadSettled = true;
                 mainHandler.removeCallbacks(loadTimeoutTask);
                 showLoading(false);
+                if (!mainFrameLoadFailed) {
+                    backupRetry = 0; // 加载成功：清零本地外网地址重试计数
+                }
                 // 无主帧错误的加载结束 = 当前地址真实可用，清零局域网重试计数
                 if (isLanAddress(serverUrl) && !mainFrameLoadFailed) {
                     lanRetryCount = 0;
@@ -200,6 +205,12 @@ public class MainActivity extends Activity {
                         String fb = lastHttpFallback;
                         lastHttpFallback = "";
                         loadServerUrl(fb);
+                        return;
+                    }
+                    // 当前地址就是本地存档的外网地址且连不上：马上走救援邮箱
+                    String backup = backupOfficial();
+                    if (!backup.isEmpty() && backup.equals(serverUrl)) {
+                        backupRetryOrRescue();
                         return;
                     }
                     // 主页加载失败：局域网绝对优先（重试/探测），确认失联才走自救链
@@ -436,6 +447,10 @@ public class MainActivity extends Activity {
         mainHandler.removeCallbacks(loadTimeoutTask);
         mainFrameLoadFailed = true;
         String backup = backupOfficial();
+        if (!backup.isEmpty() && backup.equals(serverUrl)) {
+            backupRetryOrRescue(); // 本地存档外网地址连不上：先原地重试一次，仍失败再救援邮箱
+            return;
+        }
         if (usableBackup(backup)) {
             switchToServerNow(backup);
             return;
@@ -459,6 +474,30 @@ public class MainActivity extends Activity {
     private boolean usableBackup(String url) {
         return url != null && !url.isEmpty() && !url.equals(serverUrl)
                 && (url.startsWith("http://") || url.startsWith("https://"));
+    }
+
+    /** 当前用的正是本地存档的外网地址且加载失败：偶发失败先原地重试一次
+     *  （可能只是网络抖动），连续失败才走救援邮箱。 */
+    private void backupRetryOrRescue() {
+        if (backupRetry < 1) {
+            backupRetry++;
+            Toast.makeText(this, "正在用本地外网地址重试…", Toast.LENGTH_SHORT).show();
+            loadServerUrl(serverUrl);
+            return;
+        }
+        rescueNow();
+    }
+
+    /** 当前地址（本地存档的外网地址）连不上：直接走救援邮箱取最新服务器地址；
+     *  未配置救援邮箱时退回常规失联链。 */
+    private void rescueNow() {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (!p.getString(KEY_RESCUE_USER, "").isEmpty()
+                && !p.getString(KEY_RESCUE_TOKEN, "").isEmpty()) {
+            rescueMailFetch(false); // 内部先提示「正在获取服务器地址…」
+        } else {
+            discoverOnLan(false);
+        }
     }
 
     /** 每次连接成功后的例行动作：向当前服务器拉一份官方（外网）地址存档到本地，
@@ -811,7 +850,7 @@ public class MainActivity extends Activity {
             }
             return;
         }
-        runOnUiThread(() -> Toast.makeText(this, "正在通过救援邮箱获取地址…", Toast.LENGTH_SHORT).show());
+        runOnUiThread(() -> Toast.makeText(this, "正在获取服务器地址…", Toast.LENGTH_SHORT).show());
         new Thread(() -> {
             final String url = pop3LatestUrl(ru, rt, rh);
             runOnUiThread(() -> {

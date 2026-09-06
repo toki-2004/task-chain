@@ -1482,7 +1482,11 @@ async function render() {
   const app = document.getElementById("app");
   const hash = location.hash || "#/home";
   if (!ME) {
-    await refreshMe(); // 顺带把 cookie 会话 token 认领进本标签页
+    // 登录/注册页不自动用共享 cookie 登录：需要本标签页显式登录，
+    // 避免别的页面切换账号后，本页一刷新就被 cookie 带成那个账号
+    if (hash !== "#/login" && hash !== "#/register") {
+      await refreshMe(); // 顺带把 cookie 会话 token 认领进本标签页
+    }
   }
   if (!ME && hash !== "#/login" && hash !== "#/register") { location.hash = "#/login"; return; }
   if (ME && (hash === "#/login" || hash === "#/register")) { location.hash = "#/home"; return; }

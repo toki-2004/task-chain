@@ -426,7 +426,8 @@ public class MainActivity extends Activity {
     }
 
     /** 当前地址加载超过 5 秒仍未成功（既没渲染完成也没报错）：不等 WebView 错误回调，
-     *  立即尝试切换公网地址——记住的官方新地址 → 固定入口 → 救援邮箱 → 常规失联链。 */
+     *  立即获取并切换到外网地址——已记住的官方地址 → 向当前服务器要 /api/appconfig
+     *  的官方外网地址 → 固定入口 → 救援邮箱 → 常规失联链。 */
     private void onLoadTimeout() {
         if (loadSettled) {
             return;
@@ -435,26 +436,68 @@ public class MainActivity extends Activity {
         mainHandler.removeCallbacks(loadTimeoutTask);
         mainFrameLoadFailed = true;
         if (pendingUrl != null && !pendingUrl.isEmpty() && !pendingUrl.equals(serverUrl)
-                && (pendingUrl.startsWith("http://") || pendingUrl.startsWith("https://"))
-                && autoSwitchAllowed()) {
-            markSwitch();
-            serverUrl = pendingUrl;
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                    .putString(KEY_SERVER, pendingUrl).apply();
-            Toast.makeText(this, "当前地址 5 秒未响应，切换服务器新地址", Toast.LENGTH_SHORT).show();
-            loadServerUrl(pendingUrl);
+                && (pendingUrl.startsWith("http://") || pendingUrl.startsWith("https://"))) {
+            switchToServerNow(pendingUrl);
             return;
         }
-        if (!entryUrl().isEmpty() && !entryUrl().equals(serverUrl)) {
-            resolveViaEntry(false); // 固定入口给出的官方地址（通常为公网）
+        fetchOfficialAndSwitch(); // 主动向当前服务器要官方外网地址（后台可改，不依赖局域网同步）
+    }
+
+    /** 5 秒看门狗触发的切换：当前地址已确认不响应，不受 15 秒冷却限制，避免卡死。
+     *  注意仅在页面加载停滞（超时）时调用，正常页面的自动切换仍走冷却。 */
+    private void switchToServerNow(String url) {
+        markSwitch();
+        serverUrl = url;
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_SERVER, url).apply();
+        Toast.makeText(this, "当前地址 5 秒未响应，切换服务器地址：" + url, Toast.LENGTH_SHORT).show();
+        loadServerUrl(url);
+    }
+
+    /** 看门狗兜底：请求当前服务器 /api/appconfig 拿官方（外网）地址并立即切换；
+     *  当前服务器也要不到时，再走固定入口 → 救援邮箱 → 常规失联链。 */
+    private void fetchOfficialAndSwitch() {
+        final String current = serverUrl;
+        if (current.isEmpty()) {
+            discoverOnLan(false);
             return;
         }
-        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (p.getString(KEY_RESCUE_USER, "").isEmpty() || p.getString(KEY_RESCUE_TOKEN, "").isEmpty()) {
-            discoverOnLan(false); // 常规失联链兜底
-        } else {
-            rescueMailFetch(false); // 救援邮箱直接取最新公网地址
-        }
+        new Thread(() -> {
+            String official = null;
+            try {
+                HttpURLConnection conn = TrustedHttp.open(this, current + "/api/appconfig");
+                conn.setConnectTimeout(3000);
+                conn.setReadTimeout(3000);
+                BufferedReader br = new BufferedReader(
+                        new InputStreamReader(conn.getInputStream(), "UTF-8"));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) {
+                    sb.append(line);
+                }
+                br.close();
+                official = new JSONObject(sb.toString()).optString("app_server_url", "").trim();
+            } catch (Exception ignored) {
+            }
+            final String target = official;
+            runOnUiThread(() -> {
+                if (target != null && !target.isEmpty() && !target.equals(serverUrl)
+                        && (target.startsWith("http://") || target.startsWith("https://"))) {
+                    switchToServerNow(target); // 拿到官方外网地址，立即执行
+                    return;
+                }
+                if (!entryUrl().isEmpty() && !entryUrl().equals(serverUrl)) {
+                    resolveViaEntry(false); // 固定入口给出的官方地址（通常为公网）
+                    return;
+                }
+                SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+                if (p.getString(KEY_RESCUE_USER, "").isEmpty()
+                        || p.getString(KEY_RESCUE_TOKEN, "").isEmpty()) {
+                    discoverOnLan(false); // 常规失联链兜底
+                } else {
+                    rescueMailFetch(false); // 救援邮箱直接取最新公网地址
+                }
+            });
+        }).start();
     }
 
     /** 判断是否局域网/本机地址（这些地址不做 http→https 升级）。 */

@@ -159,6 +159,8 @@ function taskCard(t, opts = {}) {
   const statusHtml = chainEnded && t.status !== "approved"
     ? '<span class="chip grey">已结束</span>' : statusChip(t.status);
   const chainChip = chainEnded && t.status === "approved" ? '<span class="chip grey">链已结束</span>' : "";
+  // 已完成/已结束的任务不再显示“剩 X / 已超期”倒计时，仅保留截止日期本身
+  const finished = t.status === "approved" || chainEnded;
   return `<div class="card task-card" data-node="${t.id}">
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       ${chainTag}${statusHtml}${chainChip}
@@ -168,7 +170,7 @@ function taskCard(t, opts = {}) {
     <div class="meta">
       <span>受任人：${esc(t.assignee_name)}</span>
       ${sub}
-      <span class="${di.cls}">⏰ ${di.text}</span>
+      ${finished ? "" : `<span class="${di.cls}">⏰ ${di.text}</span>`}
       ${t.deadline ? `<span>${fmtDT(t.deadline)}</span>` : ""}
     </div>
   </div>`;

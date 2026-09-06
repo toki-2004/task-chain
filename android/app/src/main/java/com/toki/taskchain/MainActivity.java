@@ -76,6 +76,9 @@ public class MainActivity extends Activity {
     private volatile boolean mainFrameLoadFailed = false;
     /** 局域网地址连续原地重试次数：超过上限才允许切公网自救，避免局域网抖动反复横跳 */
     private int lanRetryCount = 0;
+    /** 已记住但暂不应用的备用服务器地址：官方更新/局域网发现先存这里，
+     *  只有当前地址真正连不上（主帧加载失败）时才应用，避免可用地址互相抢切换 */
+    private volatile String pendingUrl = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -178,7 +181,18 @@ public class MainActivity extends Activity {
                         loadServerUrl(fb);
                         return;
                     }
-                    // 主页加载失败：局域网发现 → 内置入口 → 固定入口 → 救援邮箱
+                    // 有记住的备用地址（官方更新/局域网发现）：当前地址连不上，现在才应用
+                    if (pendingUrl != null && !pendingUrl.isEmpty() && !pendingUrl.equals(serverUrl)
+                            && (pendingUrl.startsWith("http://") || pendingUrl.startsWith("https://"))
+                            && autoSwitchAllowed()) {
+                        markSwitch();
+                        serverUrl = pendingUrl;
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                .putString(KEY_SERVER, pendingUrl).apply();
+                        loadServerUrl(pendingUrl);
+                        return;
+                    }
+                    // 主页加载失败：记住的备用地址 → 局域网发现 → 内置入口 → 固定入口 → 救援邮箱
                     discoverOnLan(false);
                 }
             }
@@ -605,10 +619,11 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    /** 从当前服务器拉取官方访问地址；不同则自动切换（管理后台可改，本方法静默失败）。 */
+    /** 从当前服务器拉取官方访问地址；不同则记入备用（管理后台可改，本方法静默失败）。 */
     /** 页面加载完成后的地址策略（局域网直连优先）：
      *  当前走局域网 → 保持，不被拉回公网；
-     *  当前走公网 → 静默探测局域网，发现直连地址则切回；未发现则跟随官方地址。 */
+     *  当前走公网 → 静默探测局域网，发现直连地址则记住；未发现则跟随官方地址。
+     *  记住的地址一律不立即应用，等当前地址加载失败（onReceivedError）时再切。 */
     private void postLoadChecks(String url) {
         if (isLanAddress(url)) {
             return; // 局域网直连优先：不被拉回公网官方地址
@@ -618,16 +633,22 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (lan != null && !lan.isEmpty() && !lan.equals(serverUrl)
                         && lan.startsWith("http")) {
-                    // 家里 WiFi 可直连：切回局域网（更快、不占隧道流量）
-                    if (!autoSwitchAllowed()) {
+                    if (mainFrameLoadFailed) {
+                        // 本次加载已失败：立即切到发现的局域网直连地址
+                        if (!autoSwitchAllowed()) {
+                            return;
+                        }
+                        markSwitch();
+                        serverUrl = lan;
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                .putString(KEY_SERVER, lan).apply();
+                        Toast.makeText(MainActivity.this, "已切换到局域网直连：" + lan, Toast.LENGTH_SHORT).show();
+                        loadServerUrl(lan);
                         return;
                     }
-                    markSwitch();
-                    serverUrl = lan;
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                            .putString(KEY_SERVER, lan).apply();
-                    Toast.makeText(MainActivity.this, "已切换到局域网直连：" + lan, Toast.LENGTH_SHORT).show();
-                    loadServerUrl(lan);
+                    // 当前地址仍可用：只记住局域网直连，不立即抢切；
+                    // 等当前地址连不上（onReceivedError）时再应用
+                    pendingUrl = lan;
                     return;
                 }
                 syncOfficialUrl(); // 局域网未发现 → 跟随官方地址
@@ -672,17 +693,9 @@ public class MainActivity extends Activity {
                 if (!official.startsWith("http://") && !official.startsWith("https://")) {
                     return;
                 }
-                runOnUiThread(() -> {
-                    if (!autoSwitchAllowed()) {
-                        return;
-                    }
-                    markSwitch();
-                    serverUrl = official;
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                            .putString(KEY_SERVER, official).apply();
-                    Toast.makeText(MainActivity.this, "服务器地址已更新", Toast.LENGTH_SHORT).show();
-                    loadServerUrl(official);
-                });
+                // 只记住官方新地址，不立即应用：当前地址还连得上时不被拉走，
+                // 等它加载失败（onReceivedError）时再切到记住的地址
+                pendingUrl = official;
             } catch (Exception ignored) {
                 // 拉取失败保持现地址，不影响使用
             }

@@ -175,7 +175,13 @@ function taskCard(t, opts = {}) {
 }
 
 async function refreshMe() {
-  try { ME = await GET("/api/me"); } catch (e) { /* ignore */ }
+  try {
+    const r = await GET("/api/me");
+    // /api/me 返回当前会话 token：自动认领为本标签页会话，
+    // 让通过共享 cookie 自动登录的标签页也持有独立 X-Session，不被其他标签页顶掉
+    if (r && r.token) sessionStorage.setItem("tc_sid", r.token);
+    ME = r;
+  } catch (e) { /* ignore */ }
 }
 
 /* ================= 登录页 ================= */
@@ -205,7 +211,10 @@ function renderLogin(app) {
     } catch (e) { toast(e.message, true); }
   };
   document.getElementById("lg-btn").onclick = doLogin;
-  app.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+  // 绑定到本次新建的页面元素（每次渲染都是新节点），避免在常驻 #app 上叠加监听器
+  app.querySelector(".login-wrap").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doLogin();
+  });
 }
 
 /* ================= 注册页 ================= */
@@ -240,7 +249,9 @@ function renderRegister(app) {
     } catch (e) { toast(e.message, true); }
   };
   document.getElementById("rg-btn").onclick = doRegister;
-  app.addEventListener("keydown", (e) => { if (e.key === "Enter") doRegister(); });
+  app.querySelector(".login-wrap").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doRegister();
+  });
 }
 
 /* ================= 首页 ================= */
@@ -1464,7 +1475,7 @@ async function render() {
   const app = document.getElementById("app");
   const hash = location.hash || "#/home";
   if (!ME) {
-    try { ME = await GET("/api/me"); } catch (e) { ME = null; }
+    await refreshMe(); // 顺带把 cookie 会话 token 认领进本标签页
   }
   if (!ME && hash !== "#/login" && hash !== "#/register") { location.hash = "#/login"; return; }
   if (ME && (hash === "#/login" || hash === "#/register")) { location.hash = "#/home"; return; }

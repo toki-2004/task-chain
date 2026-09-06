@@ -516,6 +516,11 @@ def main():
     rr = requests.get(f"{BASE}/api/me", headers=h2)
     check("另一标签页会话不受登出影响",
           rr.ok and rr.json()["user"]["username"] == "lisi", rr.text[:100])
+    s3 = requests.Session()
+    r3 = s3.post(f"{BASE}/api/login", json={"username": "wangwu", "password": "123456"})
+    m3 = s3.get(f"{BASE}/api/me").json()
+    check("/api/me 返回当前会话 token（cookie 标签页可认领）",
+          m3.get("token") == r3.json().get("token"), f"{m3.get('token','')} vs {r3.json().get('token','')}")
 
     # 登录防爆破（放在最后：锁的是不存在的用户名，不影响其他用例）
     for i in range(5):

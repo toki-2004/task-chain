@@ -194,6 +194,7 @@ def logout(request: Request):
 @app.get("/api/me")
 def me(request: Request):
     user = require_user(request)
+    token = _session_token(request)
     db = get_db()
     unfinished = db.execute(
         "SELECT COUNT(*) c FROM nodes n JOIN chains c2 ON c2.id=n.chain_id "
@@ -218,6 +219,7 @@ def me(request: Request):
     ).fetchone()["c"]
     db.close()
     return {
+        "token": token,
         "user": {"id": user["id"], "username": user["username"], "name": user["name"], "is_admin": bool(user["is_admin"])},
         "badges": {"unfinished": unfinished, "pending_review": pending + term, "feedback": feedback},
     }

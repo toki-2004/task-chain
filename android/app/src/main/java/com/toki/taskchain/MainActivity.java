@@ -357,7 +357,8 @@ public class MainActivity extends Activity {
         webView.loadUrl(url);
     }
 
-    /** 归一化地址：公网 http 自动升级 https（升级失败会在 onReceivedError 回落）。 */
+    /** 归一化地址：局域网一律用 http（含历史误存的 https 局域网地址降级回来）；
+     *  公网 http 自动升级 https（升级失败会在 onReceivedError 回落）。 */
     private String normalizeServerUrl(String url) {
         if (url == null || url.isEmpty()) {
             return url;
@@ -365,7 +366,12 @@ public class MainActivity extends Activity {
         while (url.endsWith("/")) {
             url = url.substring(0, url.length() - 1);
         }
-        if (url.startsWith("http://") && !isLanAddress(url)
+        if (isLanAddress(url)) {
+            // 局域网服务器是纯 http；此前误升级/误存的 https 局域网地址在此纠正
+            if (url.startsWith("https://")) {
+                url = "http://" + url.substring(8);
+            }
+        } else if (url.startsWith("http://")
                 && !("https://" + url.substring(7)).equals(lastFailedHttps)) {
             lastHttpFallback = url;
             url = "https://" + url.substring(7);
@@ -596,7 +602,9 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** 判断是否局域网/本机地址（这些地址不做 http→https 升级）。 */
+    /** 判断是否局域网/本机地址（这些地址不做 http→https 升级）。
+     *  除标准私网/CGNAT 段外，与本机任一网卡同子网即视为局域网——
+     *  覆盖路由器自定义网段（如 172.42.50.x，不在 RFC1918 172.16-172.31 内）。 */
     private static boolean isLanAddress(String url) {
         try {
             String host = new URL(url).getHost();
@@ -607,12 +615,51 @@ public class MainActivity extends Activity {
                 return true;
             }
             String[] p = host.split("\\.");
-            if (p.length == 4 && p[0].matches("\\d+") && p[1].matches("\\d+")) {
+            if (p.length == 4 && p[0].matches("\\d+") && p[1].matches("\\d+")
+                    && p[2].matches("\\d+") && p[3].matches("\\d+")) {
                 int a = Integer.parseInt(p[0]);
                 int b = Integer.parseInt(p[1]);
-                return a == 10 || a == 127 || (a == 192 && b == 168)
+                if (a == 10 || a == 127 || (a == 192 && b == 168)
                         || (a == 172 && b >= 16 && b <= 31)
-                        || (a == 100 && b >= 64 && b <= 127); // 含 Tailscale CGNAT 段
+                        || (a == 100 && b >= 64 && b <= 127)) {
+                    return true; // 标准私网 + localhost + Tailscale CGNAT 段
+                }
+                // 非标准网段：与本机任一网卡同子网也算局域网
+                return inLocalSubnet(ipToInt(p));
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private static int ipToInt(String[] p) {
+        return (Integer.parseInt(p[0]) << 24) | (Integer.parseInt(p[1]) << 16)
+                | (Integer.parseInt(p[2]) << 8) | Integer.parseInt(p[3]);
+    }
+
+    private static boolean inLocalSubnet(int host) {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> nifs =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (nifs != null && nifs.hasMoreElements()) {
+                java.net.NetworkInterface ni = nifs.nextElement();
+                if (!ni.isUp()) {
+                    continue;
+                }
+                for (java.net.InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                    java.net.InetAddress ip = ia.getAddress();
+                    if (!(ip instanceof java.net.Inet4Address)) {
+                        continue;
+                    }
+                    int prefix = ia.getNetworkPrefixLength();
+                    int mask = prefix >= 32 ? -1 : (prefix <= 0 ? 0 : (0xFFFFFFFF << (32 - prefix)));
+                    byte[] raw = ip.getAddress();
+                    int local = ((raw[0] & 0xFF) << 24) | ((raw[1] & 0xFF) << 16)
+                            | ((raw[2] & 0xFF) << 8) | (raw[3] & 0xFF);
+                    if ((host & mask) == (local & mask)) {
+                        return true;
+                    }
+                }
             }
         } catch (Exception ignored) {
         }

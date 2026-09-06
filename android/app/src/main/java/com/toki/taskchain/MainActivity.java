@@ -76,8 +76,9 @@ public class MainActivity extends Activity {
     private volatile boolean mainFrameLoadFailed = false;
     /** 局域网地址连续原地重试次数：超过上限才允许切公网自救，避免局域网抖动反复横跳 */
     private int lanRetryCount = 0;
-    /** 已记住但暂不应用的备用服务器地址：官方更新/局域网发现先存这里，
-     *  只有当前地址真正连不上（主帧加载失败）时才应用，避免可用地址互相抢切换 */
+    /** 已记住但暂不应用的官方新地址（页面正常加载时 syncOfficialUrl 读到）：
+     *  局域网下发现公网更新不立即应用，等当前地址在失联自救链里确认连不上时再切。
+     *  反方向（公网发现局域网）仍即时优先切换，见 postLoadChecks。 */
     private volatile String pendingUrl = "";
 
     @Override
@@ -181,18 +182,7 @@ public class MainActivity extends Activity {
                         loadServerUrl(fb);
                         return;
                     }
-                    // 有记住的备用地址（官方更新/局域网发现）：当前地址连不上，现在才应用
-                    if (pendingUrl != null && !pendingUrl.isEmpty() && !pendingUrl.equals(serverUrl)
-                            && (pendingUrl.startsWith("http://") || pendingUrl.startsWith("https://"))
-                            && autoSwitchAllowed()) {
-                        markSwitch();
-                        serverUrl = pendingUrl;
-                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                                .putString(KEY_SERVER, pendingUrl).apply();
-                        loadServerUrl(pendingUrl);
-                        return;
-                    }
-                    // 主页加载失败：记住的备用地址 → 局域网发现 → 内置入口 → 固定入口 → 救援邮箱
+                    // 主页加载失败：局域网绝对优先（重试/探测），确认失联才走自救链
                     discoverOnLan(false);
                 }
             }
@@ -521,6 +511,18 @@ public class MainActivity extends Activity {
                     loadServerUrl(serverUrl);
                     return;
                 }
+                // 局域网确认失联：先试记住的官方新地址（公网更新延后到这里才应用）
+                if (pendingUrl != null && !pendingUrl.isEmpty() && !pendingUrl.equals(serverUrl)
+                        && (pendingUrl.startsWith("http://") || pendingUrl.startsWith("https://"))
+                        && autoSwitchAllowed()) {
+                    markSwitch();
+                    serverUrl = pendingUrl;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_SERVER, pendingUrl).apply();
+                    Toast.makeText(MainActivity.this, "已切换到新地址：" + pendingUrl, Toast.LENGTH_SHORT).show();
+                    loadServerUrl(pendingUrl);
+                    return;
+                }
                 // 发现失败：内置默认入口 → 固定入口 → 救援邮箱 → 手动
                 if (!DEFAULT_ENTRY.isEmpty() && !DEFAULT_ENTRY.equals(serverUrl)) {
                     serverUrl = DEFAULT_ENTRY;
@@ -620,10 +622,9 @@ public class MainActivity extends Activity {
     }
 
     /** 从当前服务器拉取官方访问地址；不同则记入备用（管理后台可改，本方法静默失败）。 */
-    /** 页面加载完成后的地址策略（局域网直连优先）：
-     *  当前走局域网 → 保持，不被拉回公网；
-     *  当前走公网 → 静默探测局域网，发现直连地址则记住；未发现则跟随官方地址。
-     *  记住的地址一律不立即应用，等当前地址加载失败（onReceivedError）时再切。 */
+    /** 页面加载完成后的地址策略（方向不对称）：
+     *  当前走公网 → 静默探测局域网，发现直连地址立即切回（局域网更快、不占隧道流量）；
+     *  当前走局域网 → 保持，不因官方地址更新而立刻被拉回公网。 */
     private void postLoadChecks(String url) {
         if (isLanAddress(url)) {
             return; // 局域网直连优先：不被拉回公网官方地址
@@ -633,22 +634,16 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (lan != null && !lan.isEmpty() && !lan.equals(serverUrl)
                         && lan.startsWith("http")) {
-                    if (mainFrameLoadFailed) {
-                        // 本次加载已失败：立即切到发现的局域网直连地址
-                        if (!autoSwitchAllowed()) {
-                            return;
-                        }
-                        markSwitch();
-                        serverUrl = lan;
-                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                                .putString(KEY_SERVER, lan).apply();
-                        Toast.makeText(MainActivity.this, "已切换到局域网直连：" + lan, Toast.LENGTH_SHORT).show();
-                        loadServerUrl(lan);
+                    // 家里 WiFi 可直连：公网发现局域网 → 立即切回（更快、不占隧道流量）
+                    if (!autoSwitchAllowed()) {
                         return;
                     }
-                    // 当前地址仍可用：只记住局域网直连，不立即抢切；
-                    // 等当前地址连不上（onReceivedError）时再应用
-                    pendingUrl = lan;
+                    markSwitch();
+                    serverUrl = lan;
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_SERVER, lan).apply();
+                    Toast.makeText(MainActivity.this, "已切换到局域网直连：" + lan, Toast.LENGTH_SHORT).show();
+                    loadServerUrl(lan);
                     return;
                 }
                 syncOfficialUrl(); // 局域网未发现 → 跟随官方地址
@@ -693,8 +688,8 @@ public class MainActivity extends Activity {
                 if (!official.startsWith("http://") && !official.startsWith("https://")) {
                     return;
                 }
-                // 只记住官方新地址，不立即应用：当前地址还连得上时不被拉走，
-                // 等它加载失败（onReceivedError）时再切到记住的地址
+                // 公网侧读到官方新地址：只记住不立即应用（局域网下不被拉回公网同理），
+                // 等当前地址在失联自救链确认连不上时再切（见 discoverOnLan）
                 pendingUrl = official;
             } catch (Exception ignored) {
                 // 拉取失败保持现地址，不影响使用

@@ -55,6 +55,7 @@ public class MainActivity extends Activity {
     private static final String PREFS = "taskchain";
     private static final String KEY_SERVER = "server_url";
     private static final String KEY_ENTRY = "entry_url";
+    private static final String KEY_OFFICIAL = "official_url";
     private static final String KEY_RESCUE_USER = "rescue_user";
     private static final String KEY_RESCUE_TOKEN = "rescue_token";
     private static final String KEY_RESCUE_POP = "rescue_pop_host";
@@ -78,10 +79,6 @@ public class MainActivity extends Activity {
     private volatile boolean mainFrameLoadFailed = false;
     /** 局域网地址连续原地重试次数：超过上限才允许切公网自救，避免局域网抖动反复横跳 */
     private int lanRetryCount = 0;
-    /** 已记住但暂不应用的官方新地址（页面正常加载时 syncOfficialUrl 读到）：
-     *  局域网下发现公网更新不立即应用，等当前地址在失联自救链里确认连不上时再切。
-     *  反方向（公网发现局域网）仍即时优先切换，见 postLoadChecks。 */
-    private volatile String pendingUrl = "";
     /** 页面加载 5 秒仍未见分晓（未渲染完成也未报错）时，主动切换公网/备用地址 */
     private static final long LOAD_TIMEOUT_MS = 5000;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -173,6 +170,9 @@ public class MainActivity extends Activity {
                 // 无主帧错误的加载结束 = 当前地址真实可用，清零局域网重试计数
                 if (isLanAddress(serverUrl) && !mainFrameLoadFailed) {
                     lanRetryCount = 0;
+                }
+                if (!mainFrameLoadFailed && !serverUrl.isEmpty()) {
+                    archiveOfficialUrl(); // 每次连接成功：把官方外网地址存档到本地备用
                 }
                 postLoadChecks(url); // 局域网直连优先，其次跟随官方地址
             }
@@ -426,8 +426,8 @@ public class MainActivity extends Activity {
     }
 
     /** 当前地址加载超过 5 秒仍未成功（既没渲染完成也没报错）：不等 WebView 错误回调，
-     *  立即获取并切换到外网地址——已记住的官方地址 → 向当前服务器要 /api/appconfig
-     *  的官方外网地址 → 固定入口 → 救援邮箱 → 常规失联链。 */
+     *  直接用本地存档的外网地址切换（连接成功时已自动存档，无需现查）；
+     *  没有存档才向当前服务器要 /api/appconfig → 固定入口 → 救援邮箱 → 常规失联链。 */
     private void onLoadTimeout() {
         if (loadSettled) {
             return;
@@ -435,12 +435,68 @@ public class MainActivity extends Activity {
         loadSettled = true;
         mainHandler.removeCallbacks(loadTimeoutTask);
         mainFrameLoadFailed = true;
-        if (pendingUrl != null && !pendingUrl.isEmpty() && !pendingUrl.equals(serverUrl)
-                && (pendingUrl.startsWith("http://") || pendingUrl.startsWith("https://"))) {
-            switchToServerNow(pendingUrl);
+        String backup = backupOfficial();
+        if (usableBackup(backup)) {
+            switchToServerNow(backup);
             return;
         }
-        fetchOfficialAndSwitch(); // 主动向当前服务器要官方外网地址（后台可改，不依赖局域网同步）
+        fetchOfficialAndSwitch(); // 本地无存档时的兜底：主动向当前服务器要官方外网地址
+    }
+
+    /** 本地存档的外网（官方）地址：每次连接成功后由 archiveOfficialUrl 刷新。 */
+    private String backupOfficial() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_OFFICIAL, "");
+    }
+
+    private void saveBackupOfficial(String url) {
+        if (url != null && !url.isEmpty()
+                && (url.startsWith("http://") || url.startsWith("https://"))) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(KEY_OFFICIAL, url).apply();
+        }
+    }
+
+    private boolean usableBackup(String url) {
+        return url != null && !url.isEmpty() && !url.equals(serverUrl)
+                && (url.startsWith("http://") || url.startsWith("https://"));
+    }
+
+    /** 每次连接成功后的例行动作：向当前服务器拉一份官方（外网）地址存档到本地，
+     *  只存档不切换（局域网不被拉回公网；公网发现局域网仍即时优先，见 postLoadChecks）。 */
+    private void archiveOfficialUrl() {
+        final String current = serverUrl;
+        if (current.isEmpty()) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                HttpURLConnection conn = TrustedHttp.open(this, current + "/api/appconfig");
+                conn.setConnectTimeout(3000);
+                conn.setReadTimeout(3000);
+                BufferedReader br = new BufferedReader(
+                        new InputStreamReader(conn.getInputStream(), "UTF-8"));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) {
+                    sb.append(line);
+                }
+                br.close();
+                JSONObject obj = new JSONObject(sb.toString());
+                saveBackupOfficial(obj.optString("app_server_url", "").trim());
+                // 顺带缓存救援邮箱凭据（仅已登录会话能拿到）
+                String ru = obj.optString("rescue_user", "").trim();
+                String rt = obj.optString("rescue_token", "").trim();
+                if (!ru.isEmpty() && !rt.isEmpty()) {
+                    SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+                    sp.edit().putString(KEY_RESCUE_USER, ru)
+                            .putString(KEY_RESCUE_TOKEN, rt)
+                            .putString(KEY_RESCUE_POP, obj.optString("rescue_pop_host", "pop.qq.com"))
+                            .apply();
+                }
+            } catch (Exception ignored) {
+                // 存档失败不影响使用，下次连接成功再试
+            }
+        }).start();
     }
 
     /** 5 秒看门狗触发的切换：当前地址已确认不响应，不受 15 秒冷却限制，避免卡死。
@@ -482,6 +538,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (target != null && !target.isEmpty() && !target.equals(serverUrl)
                         && (target.startsWith("http://") || target.startsWith("https://"))) {
+                    saveBackupOfficial(target); // 也补一份本地存档
                     switchToServerNow(target); // 拿到官方外网地址，立即执行
                     return;
                 }
@@ -605,19 +662,18 @@ public class MainActivity extends Activity {
                     loadServerUrl(serverUrl);
                     return;
                 }
-                // 局域网确认失联：先试记住的官方新地址（公网更新延后到这里才应用）
-                if (pendingUrl != null && !pendingUrl.isEmpty() && !pendingUrl.equals(serverUrl)
-                        && (pendingUrl.startsWith("http://") || pendingUrl.startsWith("https://"))
-                        && autoSwitchAllowed()) {
+                // 局域网确认失联：先试本地存档的官方（外网）地址（无需现查），
+                // 再走内置入口 → 固定入口 → 救援邮箱 → 手动
+                String backup = backupOfficial();
+                if (usableBackup(backup) && autoSwitchAllowed()) {
                     markSwitch();
-                    serverUrl = pendingUrl;
+                    serverUrl = backup;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                            .putString(KEY_SERVER, pendingUrl).apply();
-                    Toast.makeText(MainActivity.this, "已切换到新地址：" + pendingUrl, Toast.LENGTH_SHORT).show();
-                    loadServerUrl(pendingUrl);
+                            .putString(KEY_SERVER, backup).apply();
+                    Toast.makeText(MainActivity.this, "已切换到新地址：" + backup, Toast.LENGTH_SHORT).show();
+                    loadServerUrl(backup);
                     return;
                 }
-                // 发现失败：内置默认入口 → 固定入口 → 救援邮箱 → 手动
                 if (!DEFAULT_ENTRY.isEmpty() && !DEFAULT_ENTRY.equals(serverUrl)) {
                     serverUrl = DEFAULT_ENTRY;
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
@@ -715,10 +771,9 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    /** 从当前服务器拉取官方访问地址；不同则记入备用（管理后台可改，本方法静默失败）。 */
     /** 页面加载完成后的地址策略（方向不对称）：
      *  当前走公网 → 静默探测局域网，发现直连地址立即切回（局域网更快、不占隧道流量）；
-     *  当前走局域网 → 保持，不因官方地址更新而立刻被拉回公网。 */
+     *  当前走局域网 → 保持（官方地址已由 onPageFinished 存档备用，不被拉回公网）。 */
     private void postLoadChecks(String url) {
         if (isLanAddress(url)) {
             return; // 局域网直连优先：不被拉回公网官方地址
@@ -740,53 +795,7 @@ public class MainActivity extends Activity {
                     loadServerUrl(lan);
                     return;
                 }
-                syncOfficialUrl(); // 局域网未发现 → 跟随官方地址
             });
-        }).start();
-    }
-
-    private void syncOfficialUrl() {
-        final String current = serverUrl;
-        if (current.isEmpty() || isLanAddress(current)) {
-            return; // 局域网直连优先级高于官方地址，不拉回公网
-        }
-        new Thread(() -> {
-            try {
-                HttpURLConnection conn = TrustedHttp.open(this, current + "/api/appconfig");
-                conn.setConnectTimeout(3000);
-                conn.setReadTimeout(3000);
-                BufferedReader br = new BufferedReader(
-                        new InputStreamReader(conn.getInputStream(), "UTF-8"));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = br.readLine()) != null) {
-                    sb.append(line);
-                }
-                br.close();
-                JSONObject obj = new JSONObject(sb.toString());
-                // 缓存服务器下发的救援邮箱凭据（仅已登录会话能拿到）
-                String ru = obj.optString("rescue_user", "").trim();
-                String rt = obj.optString("rescue_token", "").trim();
-                if (!ru.isEmpty() && !rt.isEmpty()) {
-                    SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
-                    sp.edit().putString(KEY_RESCUE_USER, ru)
-                            .putString(KEY_RESCUE_TOKEN, rt)
-                            .putString(KEY_RESCUE_POP, obj.optString("rescue_pop_host", "pop.qq.com"))
-                            .apply();
-                }
-                final String official = obj.optString("app_server_url", "").trim();
-                if (official.isEmpty() || official.equals(current)) {
-                    return;
-                }
-                if (!official.startsWith("http://") && !official.startsWith("https://")) {
-                    return;
-                }
-                // 公网侧读到官方新地址：只记住不立即应用（局域网下不被拉回公网同理），
-                // 等当前地址在失联自救链确认连不上时再切（见 discoverOnLan）
-                pendingUrl = official;
-            } catch (Exception ignored) {
-                // 拉取失败保持现地址，不影响使用
-            }
         }).start();
     }
 
@@ -936,6 +945,14 @@ public class MainActivity extends Activity {
             input.setText(serverUrl);
         }
         wrapper.addView(input);
+        String backup = backupOfficial();
+        if (!backup.isEmpty() && !backup.equals(serverUrl)) {
+            android.widget.Button useBackup = new android.widget.Button(this);
+            useBackup.setAllCaps(false);
+            useBackup.setText("使用备用外网地址：" + backup);
+            useBackup.setOnClickListener(v -> input.setText(backup));
+            wrapper.addView(useBackup);
+        }
 
         new AlertDialog.Builder(this)
                 .setTitle("设置服务器地址")

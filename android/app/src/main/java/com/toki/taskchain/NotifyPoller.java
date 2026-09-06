@@ -40,8 +40,7 @@ public final class NotifyPoller {
         }
         long lastId = sp.getLong("notify_last_id", 0);
         try {
-            HttpURLConnection conn = (HttpURLConnection)
-                    new URL(server + "/api/notifications?since=" + lastId).openConnection();
+            HttpURLConnection conn = TrustedHttp.open(ctx, server + "/api/notifications?since=" + lastId);
             conn.setConnectTimeout(8000);
             conn.setReadTimeout(10000);
             conn.setRequestProperty("Cookie", cookie);
@@ -85,8 +84,7 @@ public final class NotifyPoller {
             return;
         }
         try {
-            HttpURLConnection conn = (HttpURLConnection)
-                    new URL(server + "/apk/info").openConnection();
+            HttpURLConnection conn = TrustedHttp.open(ctx, server + "/apk/info");
             conn.setConnectTimeout(6000);
             conn.setReadTimeout(8000);
             BufferedReader br = new BufferedReader(

@@ -4,6 +4,9 @@
 /* ================= API ================= */
 async function api(method, url, body, isForm) {
   const opts = { method, credentials: "same-origin", headers: {} };
+  // 同浏览器多标签页各自登录：本标签页的会话用请求头携带，避免共享 cookie 被后登录账号覆盖
+  const sid = sessionStorage.getItem("tc_sid");
+  if (sid) opts.headers["X-Session"] = sid;
   if (body !== undefined && !isForm) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -12,6 +15,7 @@ async function api(method, url, body, isForm) {
   }
   const resp = await fetch(url, opts);
   if (resp.status === 401 && !url.includes("/api/login")) {
+    sessionStorage.removeItem("tc_sid");
     ME = null;
     const h = location.hash || "#/home";
     // 登录/注册页本身或 render 的会话探测不应触发跳转
@@ -150,11 +154,14 @@ function taskCard(t, opts = {}) {
   const sub = t.creator_id === (ME && ME.user.id) && opts.showSubmitter
     ? `<span>受任人：${esc(t.assignee_name)}</span>` : "";
   const chainTag = t.seq > 1 || opts.alwaysChain ? `<span class="chip dark">节点 ${t.seq}</span>` : "";
-  const terminated = t.chain_status === "terminated" ? '<span class="chip grey">链已结束</span>' : "";
+  const chainEnded = t.chain_status === "terminated";
+  // 链已结束但节点从未提交/通过：不再显示“进行中”，统一显示“已结束”
+  const statusHtml = chainEnded && t.status !== "approved"
+    ? '<span class="chip grey">已结束</span>' : statusChip(t.status);
+  const chainChip = chainEnded && t.status === "approved" ? '<span class="chip grey">链已结束</span>' : "";
   return `<div class="card task-card" data-node="${t.id}">
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-      ${chainTag}${statusChip(t.status, t.status === "approved" && !opts.keepStatus ? undefined : undefined)}
-      ${terminated}
+      ${chainTag}${statusHtml}${chainChip}
       <span class="chip">${esc(t.chain_title || t.title)}</span>
     </div>
     <div class="card-title" style="margin-top:6px">${esc(t.title)}</div>
@@ -190,7 +197,8 @@ function renderLogin(app) {
     const p = document.getElementById("lg-pass").value;
     if (!u || !p) return toast("请输入账号和密码", true);
     try {
-      await api("POST", "/api/login", { username: u, password: p });
+      const r = await api("POST", "/api/login", { username: u, password: p });
+      if (r && r.token) sessionStorage.setItem("tc_sid", r.token);
       ME = await GET("/api/me");
       toast("欢迎，" + ME.user.name);
       location.hash = "#/home";
@@ -224,7 +232,8 @@ function renderRegister(app) {
     if (!u || !n || !p1) return toast("请填写完整", true);
     if (p1 !== p2) return toast("两次输入的密码不一致", true);
     try {
-      await api("POST", "/api/register", { username: u, name: n, password: p1 });
+      const r = await api("POST", "/api/register", { username: u, name: n, password: p1 });
+      if (r && r.token) sessionStorage.setItem("tc_sid", r.token);
       ME = await GET("/api/me");
       toast("注册成功，欢迎，" + ME.user.name);
       location.hash = "#/home";
@@ -1068,7 +1077,7 @@ async function renderMe(app) {
   bindTabBar(app);
   app.querySelectorAll("[data-go]").forEach((el) => { el.onclick = () => { location.hash = el.dataset.go; }; });
   app.querySelector("#mi-logout").onclick = async () => {
-    await POST("/api/logout"); ME = null; location.hash = "#/login";
+    await POST("/api/logout"); sessionStorage.removeItem("tc_sid"); ME = null; location.hash = "#/login";
   };
   app.querySelector("#mi-chpwd").onclick = () => modal({
     title: "修改密码", okText: "保存",

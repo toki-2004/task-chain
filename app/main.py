@@ -57,8 +57,13 @@ def db_ctx():
 
 # ---------------------------------------------------------------- auth
 
+def _session_token(request: Request) -> str:
+    """优先取按标签页维护的会话头（同浏览器多账号），无则回退共享 cookie。"""
+    return request.headers.get("X-Session") or request.cookies.get("sid") or ""
+
+
 def current_user(request: Request):
-    token = request.cookies.get("sid")
+    token = _session_token(request)
     if not token:
         return None
     db = get_db()
@@ -140,7 +145,8 @@ def login(body: LoginBody, request: Request):
     with db_ctx() as db:
         db.execute("DELETE FROM sessions WHERE created_at < datetime('now','-30 days')")
     token = new_session(row["id"])
-    resp = JSONResponse({"ok": True, "user": {"id": row["id"], "name": row["name"], "is_admin": bool(row["is_admin"])}})
+    resp = JSONResponse({"ok": True, "token": token,
+                         "user": {"id": row["id"], "name": row["name"], "is_admin": bool(row["is_admin"])}})
     resp.set_cookie("sid", token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30, path="/")
     return resp
 
@@ -170,14 +176,14 @@ def register(body: RegisterBody, request: Request):
         )
         uid = cur.lastrowid
     token = new_session(uid)
-    resp = JSONResponse({"ok": True, "user": {"id": uid, "name": name, "is_admin": False}})
+    resp = JSONResponse({"ok": True, "token": token, "user": {"id": uid, "name": name, "is_admin": False}})
     resp.set_cookie("sid", token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30, path="/")
     return resp
 
 
 @app.post("/api/logout")
 def logout(request: Request):
-    token = request.cookies.get("sid")
+    token = _session_token(request)
     if token:
         drop_session(token)
     resp = JSONResponse({"ok": True})
@@ -554,7 +560,7 @@ def admin_release(did: int, request: Request):
 
 
 def request_user_id(db, request):
-    row = db.execute("SELECT user_id FROM sessions WHERE token=?", (request.cookies.get("sid") or "",)).fetchone()
+    row = db.execute("SELECT user_id FROM sessions WHERE token=?", (_session_token(request),)).fetchone()
     return row["user_id"] if row else None
 
 

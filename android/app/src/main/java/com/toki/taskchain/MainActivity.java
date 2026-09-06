@@ -12,6 +12,8 @@ import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.ViewGroup;
@@ -80,6 +82,17 @@ public class MainActivity extends Activity {
      *  局域网下发现公网更新不立即应用，等当前地址在失联自救链里确认连不上时再切。
      *  反方向（公网发现局域网）仍即时优先切换，见 postLoadChecks。 */
     private volatile String pendingUrl = "";
+    /** 页面加载 5 秒仍未见分晓（未渲染完成也未报错）时，主动切换公网/备用地址 */
+    private static final long LOAD_TIMEOUT_MS = 5000;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable loadTimeoutTask = new Runnable() {
+        @Override
+        public void run() {
+            onLoadTimeout();
+        }
+    };
+    /** 本次加载是否已见分晓（完成/报错），防止超时与回调重复自救 */
+    private volatile boolean loadSettled = true;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -146,11 +159,16 @@ public class MainActivity extends Activity {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 mainFrameLoadFailed = false;
+                loadSettled = false;
+                mainHandler.removeCallbacks(loadTimeoutTask);
+                mainHandler.postDelayed(loadTimeoutTask, LOAD_TIMEOUT_MS);
                 showLoading(true);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                loadSettled = true;
+                mainHandler.removeCallbacks(loadTimeoutTask);
                 showLoading(false);
                 // 无主帧错误的加载结束 = 当前地址真实可用，清零局域网重试计数
                 if (isLanAddress(serverUrl) && !mainFrameLoadFailed) {
@@ -173,6 +191,8 @@ public class MainActivity extends Activity {
                                         WebResourceError error) {
                 if (request.isForMainFrame()) {
                     mainFrameLoadFailed = true;
+                    loadSettled = true;
+                    mainHandler.removeCallbacks(loadTimeoutTask);
                     // https 尝试失败：回落到原 http 地址再试一次
                     if (serverUrl.startsWith("https://") && !lastHttpFallback.isEmpty()
                             && serverUrl.endsWith(lastHttpFallback.substring(7))) {
@@ -242,8 +262,7 @@ public class MainActivity extends Activity {
             }
             String srvVer = null;
             try {
-                HttpURLConnection conn = (HttpURLConnection)
-                        new URL(serverUrl + "/apk/info").openConnection();
+                HttpURLConnection conn = TrustedHttp.open(this, serverUrl + "/apk/info");
                 conn.setConnectTimeout(4000);
                 conn.setReadTimeout(6000);
                 BufferedReader br = new BufferedReader(
@@ -404,6 +423,38 @@ public class MainActivity extends Activity {
     private void markSwitch() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putLong("last_switch", System.currentTimeMillis()).apply();
+    }
+
+    /** 当前地址加载超过 5 秒仍未成功（既没渲染完成也没报错）：不等 WebView 错误回调，
+     *  立即尝试切换公网地址——记住的官方新地址 → 固定入口 → 救援邮箱 → 常规失联链。 */
+    private void onLoadTimeout() {
+        if (loadSettled) {
+            return;
+        }
+        loadSettled = true;
+        mainHandler.removeCallbacks(loadTimeoutTask);
+        mainFrameLoadFailed = true;
+        if (pendingUrl != null && !pendingUrl.isEmpty() && !pendingUrl.equals(serverUrl)
+                && (pendingUrl.startsWith("http://") || pendingUrl.startsWith("https://"))
+                && autoSwitchAllowed()) {
+            markSwitch();
+            serverUrl = pendingUrl;
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(KEY_SERVER, pendingUrl).apply();
+            Toast.makeText(this, "当前地址 5 秒未响应，切换服务器新地址", Toast.LENGTH_SHORT).show();
+            loadServerUrl(pendingUrl);
+            return;
+        }
+        if (!entryUrl().isEmpty() && !entryUrl().equals(serverUrl)) {
+            resolveViaEntry(false); // 固定入口给出的官方地址（通常为公网）
+            return;
+        }
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (p.getString(KEY_RESCUE_USER, "").isEmpty() || p.getString(KEY_RESCUE_TOKEN, "").isEmpty()) {
+            discoverOnLan(false); // 常规失联链兜底
+        } else {
+            rescueMailFetch(false); // 救援邮箱直接取最新公网地址
+        }
     }
 
     /** 判断是否局域网/本机地址（这些地址不做 http→https 升级）。 */
@@ -567,7 +618,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             String official = null;
             try {
-                HttpURLConnection conn = (HttpURLConnection) new URL(entry).openConnection();
+                HttpURLConnection conn = TrustedHttp.open(this, entry);
                 conn.setConnectTimeout(4000);
                 conn.setReadTimeout(4000);
                 conn.setInstanceFollowRedirects(true);
@@ -658,8 +709,7 @@ public class MainActivity extends Activity {
         }
         new Thread(() -> {
             try {
-                HttpURLConnection conn = (HttpURLConnection)
-                        new URL(current + "/api/appconfig").openConnection();
+                HttpURLConnection conn = TrustedHttp.open(this, current + "/api/appconfig");
                 conn.setConnectTimeout(3000);
                 conn.setReadTimeout(3000);
                 BufferedReader br = new BufferedReader(

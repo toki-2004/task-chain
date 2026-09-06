@@ -497,6 +497,26 @@ def main():
     r = tu.get(f"{BASE}/api/notifications").json()
     check("无关用户无该任务通知", all(i["node_id"] != n_nt for i in r["items"]), str(r)[:150])
 
+    # 同浏览器双账号：登录返回 token，X-Session 头各自独立、互不覆盖
+    r1 = requests.post(f"{BASE}/api/login", json={"username": "zhangsan", "password": "123456"})
+    r2 = requests.post(f"{BASE}/api/login", json={"username": "lisi", "password": "123456"})
+    t1 = r1.json().get("token", ""); t2 = r2.json().get("token", "")
+    check("登录返回会话 token", bool(t1) and bool(t2) and t1 != t2, f"{t1} / {t2}")
+    h1 = {"X-Session": t1}; h2 = {"X-Session": t2}
+    m1 = requests.get(f"{BASE}/api/me", headers=h1).json().get("user", {})
+    m2 = requests.get(f"{BASE}/api/me", headers=h2).json().get("user", {})
+    check("两个会话头同时有效且身份不同",
+          m1.get("username") == "zhangsan" and m2.get("username") == "lisi", f"{m1} / {m2}")
+    rr = requests.get(f"{BASE}/api/me", headers=h1)
+    check("后登录覆盖 cookie 后，另一标签页头会话仍有效",
+          rr.ok and rr.json()["user"]["username"] == "zhangsan", rr.text[:100])
+    requests.post(f"{BASE}/api/logout", headers=h1)
+    rr = requests.get(f"{BASE}/api/me", headers=h1)
+    check("登出只注销本会话", rr.status_code == 401, f"got {rr.status_code}")
+    rr = requests.get(f"{BASE}/api/me", headers=h2)
+    check("另一标签页会话不受登出影响",
+          rr.ok and rr.json()["user"]["username"] == "lisi", rr.text[:100])
+
     # 登录防爆破（放在最后：锁的是不存在的用户名，不影响其他用例）
     for i in range(5):
         requests.post(f"{BASE}/api/login", json={"username": "bruteforce_x", "password": "wrong"})

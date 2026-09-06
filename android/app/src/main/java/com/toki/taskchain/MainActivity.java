@@ -207,13 +207,18 @@ public class MainActivity extends Activity {
                         loadServerUrl(fb);
                         return;
                     }
-                    // 当前地址就是本地存档的外网地址且连不上：马上走救援邮箱
+                    // 当前地址加载失败：本地有存档外网地址且不同于当前 → 立即自动切过去重试
+                    // （局域网连不上就用外网，不再原地重试/受 15 秒冷却限制）
                     String backup = backupOfficial();
-                    if (!backup.isEmpty() && backup.equals(serverUrl)) {
-                        backupRetryOrRescue();
+                    if (usableBackup(backup)) {
+                        switchToServerNow(backup);
                         return;
                     }
-                    // 主页加载失败：局域网绝对优先（重试/探测），确认失联才走自救链
+                    if (!backup.isEmpty() && backup.equals(serverUrl)) {
+                        backupRetryOrRescue(); // 正用存档外网地址：先重试一次，仍失败再救援邮箱
+                        return;
+                    }
+                    // 无存档可用：局域网绝对优先（重试/探测），确认失联才走自救链
                     discoverOnLan(false);
                 }
             }
@@ -550,7 +555,7 @@ public class MainActivity extends Activity {
         markSwitch();
         serverUrl = url;
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_SERVER, url).apply();
-        Toast.makeText(this, "当前地址 5 秒未响应，切换服务器地址：" + url, Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "当前地址无法连接，切换服务器地址：" + url, Toast.LENGTH_SHORT).show();
         loadServerUrl(url);
     }
 
